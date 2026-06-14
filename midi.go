@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Wilson Neto
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package main
 
 import (
