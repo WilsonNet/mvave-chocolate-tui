@@ -1,18 +1,5 @@
 // Copyright (C) 2026 Wilson Neto
 // SPDX-License-Identifier: GPL-3.0-or-later
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 package main
 
@@ -30,39 +17,13 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"mvave-chocolate-tui/internal/detect"
+	"mvave-chocolate-tui/internal/midi"
+	"mvave-chocolate-tui/internal/sysex"
 )
 
 const defaultMidiDevice = "/dev/snd/midiC5D0"
-
-const (
-	modeCustom         = 0x07
-	modeProgramChangeA = 0x00
-	modeProgramChangeB = 0x01
-	modeProgramChangeC = 0x0B
-	modeKeyboardA      = 0x03
-	modeKeyboardB      = 0x04
-	modeMultiMedia     = 0x05
-	modeTouchScreen    = 0x02
-	modeManufacturer   = 0x06
-	modeVideo          = 0x08
-	modeAdvancedCustom = 0x09
-	modeCustomKeyboard = 0x0A
-)
-
-var modeNames = map[byte]string{
-	modeCustom:         "Custom CC",
-	modeProgramChangeA: "Program Change A",
-	modeProgramChangeB: "Program Change B",
-	modeProgramChangeC: "Program Change C",
-	modeKeyboardA:      "Keyboard A",
-	modeKeyboardB:      "Keyboard B",
-	modeMultiMedia:     "MultiMedia",
-	modeTouchScreen:    "Touch Screen",
-	modeManufacturer:   "Manufacturer",
-	modeVideo:          "Video",
-	modeAdvancedCustom: "Advanced Custom",
-	modeCustomKeyboard: "Custom Keyboard",
-}
 
 type SwitchConfig struct {
 	Type     string
@@ -76,8 +37,8 @@ type SwitchConfig struct {
 type SwitchState int
 
 const (
-	stateReleased SwitchState = iota
-	statePressed
+	StateReleased SwitchState = iota
+	StatePressed
 )
 
 type MidiMsg struct {
@@ -85,7 +46,6 @@ type MidiMsg struct {
 	Hex       string
 }
 
-// textField holds state for an editable text field
 type textField struct {
 	value       string
 	cursor      int
@@ -135,9 +95,14 @@ func (tf *textField) display() string {
 
 type tickMsg time.Time
 
+type midiConnectedMsg struct {
+	dev *midi.Device
+	err error
+}
+
 type Model struct {
 	midiPath   string
-	midi       *MidiDevice
+	midi       *midi.Device
 	midiMsgs   chan MidiMsg
 	ready      bool
 	connected  bool
@@ -169,9 +134,9 @@ type keyMap struct {
 	Tab       key.Binding
 	Edit      key.Binding
 	Send      key.Binding
-	LogToggle key.Binding
-	Mode      key.Binding
 	Read      key.Binding
+	Mode      key.Binding
+	LogToggle key.Binding
 	Up        key.Binding
 	Down      key.Binding
 	Left      key.Binding
@@ -196,9 +161,9 @@ var defaultKeymap = keyMap{
 	Tab:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "log view")),
 	Edit:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit switch")),
 	Send:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send all to device")),
-	LogToggle: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log")),
-	Mode:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mode select")),
 	Read:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "read config from device")),
+	Mode:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mode select")),
+	LogToggle: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log")),
 	Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 	Left:      key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "switch left")),
@@ -242,7 +207,7 @@ func NewModel(midiPath string) Model {
 
 	rows := make([]table.Row, 16)
 	for i := 0; i < 16; i++ {
-		rows[i] = makeSwitchRow(i, cfg[i], stateReleased)
+		rows[i] = makeSwitchRow(i, cfg[i], StateReleased)
 	}
 
 	t := table.New(table.WithColumns(cols), table.WithRows(rows), table.WithHeight(18))
@@ -265,7 +230,7 @@ func NewModel(midiPath string) Model {
 
 	return Model{
 		midiPath:  midiPath,
-		mode:      modeCustom,
+		mode:      sysex.ModeCustom,
 		midiMsgs:  make(chan MidiMsg, 256),
 		config:    cfg,
 		table:     t,
@@ -282,7 +247,7 @@ func makeSwitchRow(i int, cfg SwitchConfig, st SwitchState) table.Row {
 	sw := i % 4
 	label := fmt.Sprintf("%d%c", bank, 'A'+sw)
 	state := "⬆"
-	if st == statePressed {
+	if st == StatePressed {
 		state = "⬇"
 	}
 	latch := "no"
@@ -313,20 +278,15 @@ func (m *Model) Init() tea.Cmd {
 	)
 }
 
-type midiConnectedMsg struct {
-	dev *MidiDevice
-	err error
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func connectMidiCmd(path string) tea.Cmd {
 	return func() tea.Msg {
-		dev, err := OpenMidiDevice(path)
+		dev, err := midi.Open(path)
 		return midiConnectedMsg{dev: dev, err: err}
 	}
-}
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -440,7 +400,6 @@ func (m *Model) midiReadLoop() tea.Cmd {
 			}
 			n, err := m.midi.Read(buf)
 			if err != nil {
-				// Device closed or error - don't block on send
 				select {
 				case m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}:
 				default:
@@ -526,9 +485,9 @@ func (m *Model) setSwitchByCC(cc int, pressed bool) {
 	for i, cfg := range m.config {
 		if cfg.Type == "cc" && cfg.CC == cc {
 			if pressed {
-				m.swState[i] = statePressed
+				m.swState[i] = StatePressed
 			} else {
-				m.swState[i] = stateReleased
+				m.swState[i] = StateReleased
 			}
 			return
 		}
@@ -539,9 +498,9 @@ func (m *Model) setSwitchByNote(note int, pressed bool) {
 	for i, cfg := range m.config {
 		if cfg.Type == "note" && cfg.CC == note {
 			if pressed {
-				m.swState[i] = statePressed
+				m.swState[i] = StatePressed
 			} else {
-				m.swState[i] = stateReleased
+				m.swState[i] = StateReleased
 			}
 			return
 		}
@@ -662,7 +621,7 @@ func (m *Model) handleModeSelect(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, m.keymap.Confirm) {
 		m.modeSelect = false
 		m.sendModeChange()
-		m.statusMsg = fmt.Sprintf("Mode set to: %s", modeNames[m.mode])
+		m.statusMsg = fmt.Sprintf("Mode set to: %s", sysex.ModeNames[m.mode])
 		return nil
 	}
 	return nil
@@ -678,7 +637,7 @@ func (m *Model) sendModeChange() {
 	m.statusMsg = "Sending mode change..."
 
 	go func() {
-		cmd := BuildModeChange(mode)
+		cmd := sysex.BuildModeChange(mode)
 		if err := midiDev.SendSysex(cmd); err != nil {
 			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 			return
@@ -694,13 +653,12 @@ func (m *Model) sendAllConfig() {
 		return
 	}
 
-	// Snapshot config and midi pointer to avoid races
 	config := m.config
 	midiDev := m.midi
 	m.statusMsg = "Sending config to device..."
 
 	go func() {
-		for _, cmd := range BuildInitSequence() {
+		for _, cmd := range sysex.BuildInitSequence() {
 			if err := midiDev.SendSysex(cmd); err != nil {
 				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 				return
@@ -710,7 +668,7 @@ func (m *Model) sendAllConfig() {
 		}
 
 		for i, cfg := range config {
-			cmd := BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
+			cmd := sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
 			if err := midiDev.SendSysex(cmd); err != nil {
 				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 				return
@@ -731,7 +689,7 @@ func (m *Model) requestConfig() {
 	m.statusMsg = "Reading device config..."
 
 	go func() {
-		cmd := BuildReadSettings()
+		cmd := sysex.BuildReadSettings()
 		if err := midiDev.SendSysex(cmd); err != nil {
 			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 			return
@@ -760,7 +718,7 @@ func (m *Model) View() string {
 		conn = redStyle.Render("○ Disconnected")
 	}
 
-	modeStr := fmt.Sprintf("Mode: %s", modeNames[m.mode])
+	modeStr := fmt.Sprintf("Mode: %s", sysex.ModeNames[m.mode])
 
 	var body string
 	switch {
@@ -797,12 +755,14 @@ func (m *Model) renderModeSelect() string {
 	lines = append(lines, "Select operating mode:")
 	lines = append(lines, "")
 
-	keys := []byte{modeCustom, modeProgramChangeA, modeProgramChangeB, modeProgramChangeC,
-		modeKeyboardA, modeKeyboardB, modeMultiMedia, modeTouchScreen,
-		modeManufacturer, modeVideo, modeAdvancedCustom, modeCustomKeyboard}
+	keys := []byte{
+		sysex.ModeCustom, sysex.ModeProgramChangeA, sysex.ModeProgramChangeB, sysex.ModeProgramChangeC,
+		sysex.ModeKeyboardA, sysex.ModeKeyboardB, sysex.ModeMultiMedia, sysex.ModeTouchScreen,
+		sysex.ModeManufacturer, sysex.ModeVideo, sysex.ModeAdvancedCustom, sysex.ModeCustomKeyboard,
+	}
 
 	for _, k := range keys {
-		name := modeNames[k]
+		name := sysex.ModeNames[k]
 		if k == m.mode {
 			name = highlight.Render("> " + name)
 		} else {
@@ -841,12 +801,12 @@ func main() {
 	if len(os.Args) > 1 {
 		midiPath = os.Args[1]
 	} else {
-		if detected, err := findMidiDevice(); err == nil && detected != "" {
+		if detected, err := detect.Find(); err == nil && detected != "" {
 			midiPath = detected
 			fmt.Fprintf(os.Stderr, "auto-detected: %s\n", detected)
 		} else {
 			fmt.Fprintf(os.Stderr, "No M-Vave Chocolate found (SINCO/FootCtrl).\n")
-			fmt.Fprintf(os.Stderr, "Plug it in and try again, or specify path: mvave-tui /dev/snd/midiC5D0\n")
+			fmt.Fprintf(os.Stderr, "Plug it in and try again, or specify path: mvave-chocolate-tui /dev/snd/midiC5D0\n")
 			os.Exit(1)
 		}
 	}

@@ -1,4 +1,7 @@
-package main
+// Copyright (C) 2026 Wilson Neto
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package midi
 
 import (
 	"encoding/hex"
@@ -8,16 +11,17 @@ import (
 	"strings"
 	"testing"
 	"time"
-)
 
-// --- Headless E2E: real MIDI operations ---
+	"mvave-chocolate-tui/internal/detect"
+	"mvave-chocolate-tui/internal/sysex"
+)
 
 func TestHeadlessOpen(t *testing.T) {
 	path := findDeviceOrSkip(t)
 	start := time.Now()
-	dev, err := OpenMidiDevice(path)
+	dev, err := Open(path)
 	if err != nil {
-		t.Fatalf("OpenMidiDevice failed after %v: %v", time.Since(start), err)
+		t.Fatalf("Open failed after %v: %v", time.Since(start), err)
 	}
 	defer dev.Close()
 	t.Logf("OK: opened in %v", time.Since(start))
@@ -27,7 +31,7 @@ func TestHeadlessAmidiSend(t *testing.T) {
 	path := findDeviceOrSkip(t)
 	alsaDev := pathToAlsa(path)
 
-	msg := BuildModeChange(modeCustom)
+	msg := sysex.BuildModeChange(sysex.ModeCustom)
 	ch := make(chan error, 1)
 	go func() {
 		cmd := exec.Command("amidi", "-p", alsaDev, "-S", hex.EncodeToString(msg))
@@ -51,7 +55,7 @@ func TestHeadlessAmidiSend(t *testing.T) {
 
 func TestHeadlessFullFlow(t *testing.T) {
 	path := findDeviceOrSkip(t)
-	dev, err := OpenMidiDevice(path)
+	dev, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +65,9 @@ func TestHeadlessFullFlow(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"mode change", func() error { return dev.SendSysex(BuildModeChange(modeCustom)) }},
-		{"CC config", func() error { return dev.SendSysex(BuildCCConfig(0, 49, false, 0)) }},
-		{"read settings", func() error { return dev.SendSysex(BuildReadSettings()) }},
+		{"mode change", func() error { return dev.SendSysex(sysex.BuildModeChange(sysex.ModeCustom)) }},
+		{"CC config", func() error { return dev.SendSysex(sysex.BuildCCConfig(0, 49, false, 0)) }},
+		{"read settings", func() error { return dev.SendSysex(sysex.BuildReadSettings()) }},
 	}
 
 	for _, s := range steps {
@@ -89,9 +93,9 @@ func TestHeadlessAmidiThreeOps(t *testing.T) {
 		name string
 		hex  string
 	}{
-		{"mode", hex.EncodeToString(BuildModeChange(modeCustom))},
-		{"CC", hex.EncodeToString(BuildCCConfig(0, 49, false, 0))},
-		{"read", hex.EncodeToString(BuildReadSettings())},
+		{"mode", hex.EncodeToString(sysex.BuildModeChange(sysex.ModeCustom))},
+		{"CC", hex.EncodeToString(sysex.BuildCCConfig(0, 49, false, 0))},
+		{"read", hex.EncodeToString(sysex.BuildReadSettings())},
 	}
 
 	for _, op := range ops {
@@ -117,13 +121,10 @@ func TestHeadlessAmidiThreeOps(t *testing.T) {
 	}
 }
 
-// --- Diagnostic: does amidi block when raw fd is held? ---
-
 func TestAmidiWithReadFdHeld(t *testing.T) {
 	path := findDeviceOrSkip(t)
 	alsaDev := pathToAlsa(path)
 
-	// Open raw fd for read, like the TUI read loop does
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -131,21 +132,18 @@ func TestAmidiWithReadFdHeld(t *testing.T) {
 	defer f.Close()
 	t.Log("raw fd opened for read")
 
-	// Start a blocking read in background (like midiReadLoop)
 	go func() {
 		buf := make([]byte, 64)
 		_, _ = f.Read(buf)
 	}()
 
-	// Give the goroutine time to enter the blocking read
 	time.Sleep(100 * time.Millisecond)
 
-	// Now try amidi (like TUI sendAllConfig goroutine)
 	start := time.Now()
 	ch := make(chan error, 1)
 	go func() {
 		cmd := exec.Command("amidi", "-p", alsaDev, "-S",
-			hex.EncodeToString(BuildModeChange(modeCustom)))
+			hex.EncodeToString(sysex.BuildModeChange(sysex.ModeCustom)))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			ch <- fmt.Errorf("amidi: %w: %s", err, strings.TrimSpace(string(out)))
@@ -161,14 +159,6 @@ func TestAmidiWithReadFdHeld(t *testing.T) {
 		}
 		t.Logf("OK: amidi completed in %v with raw read fd held", time.Since(start))
 	case <-time.After(10 * time.Second):
-		// Try to get amidi output via strace-like diagnosis
-		t.Logf("amidi timed out after 10s, checking if process is stuck...")
-		out, _ := exec.Command("ps", "aux").CombinedOutput()
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "amidi") {
-				t.Logf("amidi process: %s", line)
-			}
-		}
 		t.Fatal("TIMEOUT: amidi blocks when raw read fd is held!")
 	}
 }
@@ -180,7 +170,7 @@ func TestAmidiWithoutReadFd(t *testing.T) {
 
 	start := time.Now()
 	cmd := exec.Command("amidi", "-p", alsaDev, "-S",
-		hex.EncodeToString(BuildModeChange(modeCustom)))
+		hex.EncodeToString(sysex.BuildModeChange(sysex.ModeCustom)))
 	out, err := cmd.CombinedOutput()
 	elapsed := time.Since(start)
 	if err != nil {
@@ -189,11 +179,9 @@ func TestAmidiWithoutReadFd(t *testing.T) {
 	t.Logf("OK: amidi without read fd completed in %v", elapsed)
 }
 
-// --- Helpers ---
-
 func findDeviceOrSkip(t *testing.T) string {
 	t.Helper()
-	path, err := findMidiDevice()
+	path, err := detect.Find()
 	if err != nil || path == "" {
 		t.Skipf("no SINCO device found: %v", err)
 	}

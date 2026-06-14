@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Wilson Neto
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package main
+// Package detect auto-discovers the M-Vave Chocolate MIDI device.
+package detect
 
 import (
 	"fmt"
@@ -10,13 +11,13 @@ import (
 	"strings"
 )
 
-var deviceNames = []string{"SINCO", "FootCtrl", "USB-Midi"}
+var DeviceNames = []string{"SINCO", "FootCtrl", "USB-Midi"}
 
-func findMidiDevice() (string, error) {
+func Find() (string, error) {
 	data, err := os.ReadFile("/proc/asound/cards")
 	if err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
-			for _, name := range deviceNames {
+			for _, name := range DeviceNames {
 				if strings.Contains(line, name) {
 					cardNum := strings.TrimSpace(strings.Split(line, "[")[0])
 					candidates, _ := filepath.Glob(fmt.Sprintf("/dev/snd/midiC%s*", cardNum))

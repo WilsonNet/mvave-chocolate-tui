@@ -95,4 +95,4 @@ Should show `SINCO MIDI 1`.
 
 ## License
 
-MIT
+GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -10,11 +10,18 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
+
+	"mvave-chocolate-tui/internal/midi"
+	"mvave-chocolate-tui/internal/sysex"
 )
+
+func hexEq(a, b string) bool {
+	return strings.EqualFold(a, b)
+}
 
 // --- Unit tests for new functionality ---
 
-func TestFindMidiDeviceFromProcFS(t *testing.T) {
+func TestFindDeviceFromProcFS(t *testing.T) {
 	// Create a fake /proc/asound/cards
 	tmpDir := t.TempDir()
 	fakeCards := filepath.Join(tmpDir, "cards")
@@ -48,10 +55,10 @@ func TestFindMidiDeviceFromProcFS(t *testing.T) {
 }
 
 func TestBuildInitSequence(t *testing.T) {
-	seq := BuildInitSequence()
+	seq := sysex.BuildInitSequence()
 
 	if len(seq) != 8 {
-		t.Errorf("BuildInitSequence: expected 8 messages, got %d", len(seq))
+		t.Errorf("sysex.BuildInitSequence: expected 8 messages, got %d", len(seq))
 	}
 
 	for i, msg := range seq {
@@ -68,8 +75,8 @@ func TestBuildInitSequence(t *testing.T) {
 	}
 
 	// Third message should be mode change to Custom CC (0x07)
-	modeMsg := seq[2] // index 2 is BuildModeChange(modeCustom)
-	expectedMode := BuildModeChange(modeCustom)
+	modeMsg := seq[2] // index 2 is sysex.BuildModeChange(sysex.ModeCustom)
+	expectedMode := sysex.BuildModeChange(sysex.ModeCustom)
 	if len(modeMsg) != len(expectedMode) {
 		t.Errorf("mode change message length mismatch: got %d, expected %d", len(modeMsg), len(expectedMode))
 	}
@@ -87,11 +94,11 @@ func TestBuildInitSequence(t *testing.T) {
 
 func TestBuildCCConfigChannel(t *testing.T) {
 	// CC config should produce exactly 2 messages (CC value + latching)
-	data := BuildCCConfig(0, 44, false, 0)
-	msgLen := len(knownExamples[0].data) + 4 // F0 + 17 data + 2 checksum + F7
+	data := sysex.BuildCCConfig(0, 44, false, 0)
+	msgLen := len(sysex.KnownExamples[0].Data) + 4 // F0 + 17 data + 2 checksum + F7
 
 	if len(data) != 2*msgLen {
-		t.Fatalf("BuildCCConfig: expected %d bytes (2 x %d), got %d", 2*msgLen, msgLen, len(data))
+		t.Fatalf("sysex.BuildCCConfig: expected %d bytes (2 x %d), got %d", 2*msgLen, msgLen, len(data))
 	}
 
 	// First message should have F0 start and F7 end
@@ -112,12 +119,12 @@ func TestBuildCCConfigChannel(t *testing.T) {
 	}
 }
 
-func TestCCConfigAllBanks(t *testing.T) {
+func TestBuildCCConfigChannelAllBanks(t *testing.T) {
 	// Verify all 4 banks produce valid messages
 	for bank := 0; bank < 4; bank++ {
 		sw := bank * 4
-		data := BuildCCConfig(sw, 20, false, 0)
-		msgLen := len(knownExamples[0].data) + 4
+		data := sysex.BuildCCConfig(sw, 20, false, 0)
+		msgLen := len(sysex.KnownExamples[0].Data) + 4
 		if len(data) != 2*msgLen {
 			t.Errorf("bank %d switch %d: wrong length %d", bank, sw, len(data))
 		}
@@ -162,15 +169,18 @@ func TestSendAllConfigWithMockDevice(t *testing.T) {
 	m := NewModel("/dev/null")
 	mock := &mockMidiDevice{}
 
-	// Replace midi with mock by creating a real MidiDevice using a temp file
+	// Replace midi with mock by creating a real midi.Device using a temp file
 	tmpFile, err := os.CreateTemp("", "midi-mock-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
 
-	dev := &MidiDevice{f: tmpFile}
+	dev, err := midi.Open(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dev.Close()
 	m.midi = dev
 
 	m.sendAllConfig()
@@ -189,10 +199,13 @@ func TestModelCleanupOnQuit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
 
 	m := NewModel(tmpFile.Name())
-	m.midi = &MidiDevice{f: tmpFile}
+	dev, err := midi.Open(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.midi = dev
 
 	// Quit
 	if m.midi != nil {
@@ -213,13 +226,13 @@ func TestModelReopenAfterQuit(t *testing.T) {
 	}
 	defer os.Remove(tmpFile.Name())
 
-	dev1, err := OpenMidiDevice(tmpFile.Name())
+	dev1, err := midi.Open(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
 	dev1.Close()
 
-	dev2, err := OpenMidiDevice(tmpFile.Name())
+	dev2, err := midi.Open(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("second open after close: %v", err)
 	}
