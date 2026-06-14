@@ -116,15 +116,174 @@ func BuildDiscovery() []byte {
 
 func BuildInitSequence() [][]byte {
 	return [][]byte{
+		// 1-2: Session init / read requests (0D 41)
 		{0xF0, 0x00, 0x32, 0x0D, 0x41, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x10, 0x7E, 0x00, 0x00, 0x07, 0x00, 0xF7},
 		{0xF0, 0x00, 0x32, 0x0D, 0x41, 0x00, 0x00, 0x00, 0x02, 0x71, 0x07, 0x00, 0x00, 0x10, 0x6A, 0x00, 0x00, 0x33, 0x01, 0xF7},
+		// 3: Mode change to Custom CC
 		BuildModeChange(ModeCustom),
+		// 4-8: Bank probes with CC readback (subcmd 02,04,06,08,0A)
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x02, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x20, 0x30, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x04, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x21, 0x2A, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x22, 0x24, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x03, 0x5E, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x0A, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x2C, 0x08, 0x03, 0xF7},
+		// 9-12: Per-switch type init (subcmd 32,36,3A,3E with byte[10]=0E)
+		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x32, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x07, 0x74, 0x02, 0xF7},
+		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x36, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x09, 0x68, 0x02, 0xF7},
+		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x3A, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x0A, 0x5E, 0x02, 0xF7},
+		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x3E, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x0B, 0x54, 0x02, 0xF7},
 	}
+}
+
+// SplitMessages splits concatenated SysEx messages (F0...F7 F0...F7) into individual frames.
+func SplitMessages(data []byte) [][]byte {
+	var msgs [][]byte
+	searchFrom := 0
+	for searchFrom < len(data) {
+		f0 := -1
+		for i := searchFrom; i < len(data); i++ {
+			if data[i] == 0xF0 {
+				f0 = i
+				break
+			}
+		}
+		if f0 < 0 {
+			break
+		}
+		f7 := -1
+		for i := f0 + 1; i < len(data); i++ {
+			if data[i] == 0xF7 {
+				f7 = i
+				break
+			}
+		}
+		if f7 < 0 {
+			break
+		}
+		msgs = append(msgs, data[f0:f7+1])
+		searchFrom = f7 + 1
+	}
+	if len(msgs) == 0 && len(data) > 0 {
+		msgs = append(msgs, data)
+	}
+	return msgs
+}
+
+// ConfigResponse holds parsed device configuration from a read response.
+type ConfigResponse struct {
+	Mode  byte
+	CC    [4]byte // bank 0-3 CC values
+	Latch [4]bool // bank 0-3 latching state
+}
+
+// ParseConfigResponse parses a 0D 49 response frame and extracts the device configuration.
+// The response format is: F0 00 32 0D 49 ... 10 7E 00 00 <config> <checksum> F7
+// Within <config>, the first byte is the mode, followed by subcmd+value pairs
+// for each bank setting (0x02/0x03 for bank 0, 0x04/0x05 for bank 1, etc.).
+func ParseConfigResponse(frame []byte) *ConfigResponse {
+	if len(frame) < 20 {
+		return nil
+	}
+	if frame[0] != 0xF0 || frame[1] != 0x00 || frame[2] != 0x32 ||
+		frame[3] != 0x0D || frame[4] != 0x49 {
+		return nil
+	}
+
+	cr := &ConfigResponse{}
+
+	// Find the config section after "10 7E 00 00" marker.
+	// Then search only that section for subcmd+value pairs.
+	configStart := -1
+	for i := 5; i < len(frame)-6; i++ {
+		if frame[i] == 0x10 && frame[i+1] == 0x7E && frame[i+2] == 0x00 && frame[i+3] == 0x00 {
+			configStart = i + 4
+			break
+		}
+	}
+
+	// Determine the search range: config section only.
+	searchEnd := len(frame) - 2 // exclude checksum + F7
+	if configStart <= 0 {
+		// No 10 7E 00 00 marker — not a config response frame.
+		return nil
+	}
+	searchStart := configStart
+
+	// Mode is the first byte of the config section.
+	if configStart > 0 && configStart < len(frame) {
+		cr.Mode = frame[configStart]
+	}
+
+	// Find CC and latch values. Search within config section only.
+	for i := searchStart; i < searchEnd-1; i++ {
+		b := frame[i]
+		switch {
+		case b == 0x02 && frame[i+1] <= 127 && cr.CC[0] == 0:
+			cr.CC[0] = frame[i+1]
+		case b == 0x03:
+			cr.Latch[0] = frame[i+1] == 1
+		case b == 0x04 && frame[i+1] <= 127 && cr.CC[1] == 0:
+			cr.CC[1] = frame[i+1]
+		case b == 0x05:
+			cr.Latch[1] = frame[i+1] == 1
+		case b == 0x06 && frame[i+1] <= 127 && cr.CC[2] == 0:
+			cr.CC[2] = frame[i+1]
+		case b == 0x07:
+			cr.Latch[2] = frame[i+1] == 1
+		case b == 0x08 && frame[i+1] <= 127 && cr.CC[3] == 0:
+			cr.CC[3] = frame[i+1]
+		case b == 0x09:
+			cr.Latch[3] = frame[i+1] == 1
+		}
+	}
+
+	return cr
+}
+
+// IsOKResponse checks if a SysEx frame is the standard OK acknowledgment.
+func IsOKResponse(frame []byte) bool {
+	return len(frame) >= 10 &&
+		frame[0] == 0xF0 && frame[1] == 0x00 && frame[2] == 0x32 &&
+		frame[3] == 0x01 && frame[4] == 0x08
+}
+
+// FindSysExFrames extracts all SysEx frames with the given header prefix from raw data.
+func FindSysExFrames(data []byte, header []byte) [][]byte {
+	var frames [][]byte
+	searchFrom := 0
+	for searchFrom < len(data) {
+		idx := -1
+		for i := searchFrom; i <= len(data)-len(header); i++ {
+			match := true
+			for j := 0; j < len(header); j++ {
+				if data[i+j] != header[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		start := idx
+		end := -1
+		for i := start; i < len(data); i++ {
+			if data[i] == 0xF7 {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+		frames = append(frames, data[start:end+1])
+		searchFrom = end + 1
+	}
+	return frames
 }
 
 // Checksum computes the 2-byte checksum for Chocolate SysEx messages.

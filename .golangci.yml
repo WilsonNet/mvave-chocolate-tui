@@ -1,14 +1,13 @@
+version: "2"
+
 linters:
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+    - misspell
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
 
 run:
   timeout: 2m
@@ -17,5 +16,3 @@ run:
 issues:
   max-issues-per-linter: 50
   max-same-issues: 10
-  exclude-dirs:
-    - cmd

@@ -117,6 +117,7 @@ type Model struct {
 	editSwitch bool
 	editIdx    int
 	editField  int
+	modeBefore byte // saved on entering mode select, restored on cancel
 
 	config  [16]SwitchConfig
 	swState [16]SwitchState
@@ -255,9 +256,10 @@ func makeSwitchRow(i int, cfg SwitchConfig, st SwitchState) table.Row {
 		latch = "yes"
 	}
 	ccLabel := fmt.Sprintf("%d", cfg.CC)
-	if cfg.Type == "note" {
+	switch cfg.Type {
+	case "note":
 		ccLabel = fmt.Sprintf("N%d", cfg.CC)
-	} else if cfg.Type == "pc" {
+	case "pc":
 		ccLabel = fmt.Sprintf("P%d", cfg.CC)
 	}
 	return table.Row{label, cfg.Type, fmt.Sprintf("%d", cfg.Channel), ccLabel, fmt.Sprintf("%d", cfg.Value1), fmt.Sprintf("%d", cfg.Value2), latch, state}
@@ -343,7 +345,7 @@ drained:
 		switch {
 		case key.Matches(msg, m.keymap.Quit):
 			if m.midi != nil {
-				m.midi.Close()
+				_ = m.midi.Close()
 				m.midi = nil
 			}
 			return m, tea.Quit
@@ -354,6 +356,7 @@ drained:
 		case key.Matches(msg, m.keymap.Edit):
 			m.startEdit(m.table.Cursor())
 		case key.Matches(msg, m.keymap.Mode):
+			m.modeBefore = m.mode
 			m.modeSelect = true
 			m.statusMsg = "Select mode (↑↓ to choose, enter to confirm, esc to cancel)"
 		case key.Matches(msg, m.keymap.Read):
@@ -393,7 +396,7 @@ func (m *Model) updateViewport() {
 
 func (m *Model) midiReadLoop() tea.Cmd {
 	return func() tea.Msg {
-		buf := make([]byte, 64)
+		buf := make([]byte, 4096)
 		for {
 			if m.midi == nil {
 				return nil
@@ -473,7 +476,25 @@ func (m *Model) parseMidiBytes(data []byte) {
 			if end < 0 {
 				return
 			}
-			m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "SYX " + hex.EncodeToString(data[i:end+1])})
+			frame := data[i : end+1]
+			m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "SYX " + hex.EncodeToString(frame)})
+
+			if sysex.IsOKResponse(frame) {
+				m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "OK response — config write accepted"})
+			}
+
+			if cr := sysex.ParseConfigResponse(frame); cr != nil {
+				if _, ok := sysex.ModeNames[cr.Mode]; ok {
+					m.mode = cr.Mode
+				}
+				for bank := 0; bank < 4; bank++ {
+					for sw := bank * 4; sw < (bank+1)*4 && sw < 16; sw++ {
+						m.config[sw].CC = int(cr.CC[bank])
+						m.config[sw].Latching = cr.Latch[bank]
+					}
+				}
+				m.statusMsg = fmt.Sprintf("Config loaded — mode: %s", sysex.ModeNames[m.mode])
+			}
 			i = end + 1
 		default:
 			i++
@@ -612,8 +633,15 @@ func (m *Model) applyEdit() {
 	cfg.Latching = strings.ToLower(m.fields[5].value) == "yes" || m.fields[5].value == "1"
 }
 
+var modeKeys = []byte{
+	sysex.ModeCustom, sysex.ModeProgramChangeA, sysex.ModeProgramChangeB, sysex.ModeProgramChangeC,
+	sysex.ModeKeyboardA, sysex.ModeKeyboardB, sysex.ModeMultiMedia, sysex.ModeTouchScreen,
+	sysex.ModeManufacturer, sysex.ModeVideo, sysex.ModeAdvancedCustom, sysex.ModeCustomKeyboard,
+}
+
 func (m *Model) handleModeSelect(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, m.keymap.Cancel) {
+		m.mode = m.modeBefore
 		m.modeSelect = false
 		m.statusMsg = "Mode selection cancelled"
 		return nil
@@ -624,7 +652,32 @@ func (m *Model) handleModeSelect(msg tea.KeyMsg) tea.Cmd {
 		m.statusMsg = fmt.Sprintf("Mode set to: %s", sysex.ModeNames[m.mode])
 		return nil
 	}
+	if key.Matches(msg, m.keymap.Up) || key.Matches(msg, m.keymap.Left) {
+		idx := modeIndex(m.mode) - 1
+		if idx < 0 {
+			idx = len(modeKeys) - 1
+		}
+		m.mode = modeKeys[idx]
+		return nil
+	}
+	if key.Matches(msg, m.keymap.Down) || key.Matches(msg, m.keymap.Right) {
+		idx := modeIndex(m.mode) + 1
+		if idx >= len(modeKeys) {
+			idx = 0
+		}
+		m.mode = modeKeys[idx]
+		return nil
+	}
 	return nil
+}
+
+func modeIndex(mode byte) int {
+	for i, k := range modeKeys {
+		if k == mode {
+			return i
+		}
+	}
+	return 0
 }
 
 func (m *Model) sendModeChange() {
@@ -668,13 +721,15 @@ func (m *Model) sendAllConfig() {
 		}
 
 		for i, cfg := range config {
-			cmd := sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
-			if err := midiDev.SendSysex(cmd); err != nil {
-				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-				return
+			ccData := sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
+			for _, cmd := range sysex.SplitMessages(ccData) {
+				if err := midiDev.SendSysex(cmd); err != nil {
+					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+					return
+				}
+				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
+				time.Sleep(40 * time.Millisecond)
 			}
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-			time.Sleep(20 * time.Millisecond)
 		}
 		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: all config sent"}
 	}()
@@ -755,13 +810,7 @@ func (m *Model) renderModeSelect() string {
 	lines = append(lines, "Select operating mode:")
 	lines = append(lines, "")
 
-	keys := []byte{
-		sysex.ModeCustom, sysex.ModeProgramChangeA, sysex.ModeProgramChangeB, sysex.ModeProgramChangeC,
-		sysex.ModeKeyboardA, sysex.ModeKeyboardB, sysex.ModeMultiMedia, sysex.ModeTouchScreen,
-		sysex.ModeManufacturer, sysex.ModeVideo, sysex.ModeAdvancedCustom, sysex.ModeCustomKeyboard,
-	}
-
-	for _, k := range keys {
+	for _, k := range modeKeys {
 		name := sysex.ModeNames[k]
 		if k == m.mode {
 			name = highlight.Render("> " + name)

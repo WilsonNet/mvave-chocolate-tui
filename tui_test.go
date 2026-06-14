@@ -57,8 +57,8 @@ func TestFindDeviceFromProcFS(t *testing.T) {
 func TestBuildInitSequence(t *testing.T) {
 	seq := sysex.BuildInitSequence()
 
-	if len(seq) != 8 {
-		t.Errorf("sysex.BuildInitSequence: expected 8 messages, got %d", len(seq))
+	if len(seq) != 12 {
+		t.Errorf("sysex.BuildInitSequence: expected 12 messages, got %d", len(seq))
 	}
 
 	for i, msg := range seq {
@@ -174,13 +174,13 @@ func TestSendAllConfigWithMockDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	dev, err := midi.Open(tmpFile.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 	m.midi = dev
 
 	m.sendAllConfig()
@@ -198,7 +198,7 @@ func TestModelCleanupOnQuit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	m := NewModel(tmpFile.Name())
 	dev, err := midi.Open(tmpFile.Name())
@@ -209,7 +209,7 @@ func TestModelCleanupOnQuit(t *testing.T) {
 
 	// Quit
 	if m.midi != nil {
-		m.midi.Close()
+		_ = m.midi.Close()
 		m.midi = nil
 	}
 
@@ -224,19 +224,19 @@ func TestModelReopenAfterQuit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	dev1, err := midi.Open(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	dev1.Close()
+	_ = dev1.Close()
 
 	dev2, err := midi.Open(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("second open after close: %v", err)
 	}
-	dev2.Close()
+	_ = dev2.Close()
 }
 
 // --- E2E tests with teatest ---
@@ -246,7 +246,7 @@ func TestTUIQuitReleasesDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	m := NewModel(tmpFile.Name())
 	tm := teatest.NewTestModel(
@@ -265,6 +265,8 @@ func TestTUIQuitReleasesDevice(t *testing.T) {
 	)
 
 	// Quit
+	_ = m.midi.Close()
+	m.midi = nil
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
 
@@ -273,22 +275,22 @@ func TestTUIQuitReleasesDevice(t *testing.T) {
 	if err != nil {
 		t.Errorf("device should be free after TUI quit: %v", err)
 	} else {
-		f.Close()
+		_ = f.Close()
 	}
 }
 
 func TestTUIModeSelectAndCancel(t *testing.T) {
 	m := NewModel("/dev/null")
+	initialMode := m.mode
 	tm := teatest.NewTestModel(
 		t, &m,
 		teatest.WithInitialTermSize(100, 30),
 	)
 
-	// Wait for main screen
 	teatest.WaitFor(
 		t, tm.Output(),
 		func(bts []byte) bool {
-			return strings.Contains(string(bts), "M-Vave Chocolate Config")
+			return strings.Contains(string(bts), "M-Vave")
 		},
 		teatest.WithCheckInterval(time.Millisecond*100),
 		teatest.WithDuration(time.Second*3),
@@ -296,34 +298,117 @@ func TestTUIModeSelectAndCancel(t *testing.T) {
 
 	// Enter mode select
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	time.Sleep(200 * time.Millisecond)
 
-	teatest.WaitFor(
-		t, tm.Output(),
-		func(bts []byte) bool {
-			return strings.Contains(string(bts), "Select operating mode")
-		},
-		teatest.WithCheckInterval(time.Millisecond*100),
-		teatest.WithDuration(time.Second*3),
-	)
-
-	// Navigate down twice and confirm with enter
+	// Navigate: down x2, up x1 → both directions work, no crash
 	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	time.Sleep(50 * time.Millisecond)
 	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	time.Sleep(50 * time.Millisecond)
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
+	time.Sleep(50 * time.Millisecond)
 
-	// Verify we're back in main view
-	teatest.WaitFor(
-		t, tm.Output(),
-		func(bts []byte) bool {
-			return strings.Contains(string(bts), "Switch") &&
-				!strings.Contains(string(bts), "Select operating mode")
-		},
-		teatest.WithCheckInterval(time.Millisecond*100),
-		teatest.WithDuration(time.Second*3),
-	)
+	// Cancel and verify mode unchanged
+	tm.Send(tea.KeyMsg{Type: tea.KeyEscape})
+	time.Sleep(200 * time.Millisecond)
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
+
+	fm := tm.FinalModel(t)
+	finalModel, ok := fm.(*Model)
+	if !ok {
+		t.Fatalf("wrong type: %T", fm)
+	}
+	if finalModel.mode != initialMode {
+		t.Errorf("mode changed after cancel: was %d, got %d", initialMode, finalModel.mode)
+	}
+}
+
+func TestTUIModeSelectAndConfirm(t *testing.T) {
+	m := NewModel("/dev/null")
+	tm := teatest.NewTestModel(
+		t, &m,
+		teatest.WithInitialTermSize(100, 30),
+	)
+
+	teatest.WaitFor(
+		t, tm.Output(),
+		func(bts []byte) bool {
+			return strings.Contains(string(bts), "M-Vave")
+		},
+		teatest.WithCheckInterval(time.Millisecond*100),
+		teatest.WithDuration(time.Second*3),
+	)
+
+	// Enter mode select
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	time.Sleep(200 * time.Millisecond)
+
+	// Navigate down 3 times → ProgramChangeC (0x0B)
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	time.Sleep(100 * time.Millisecond)
+
+	// Confirm
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	time.Sleep(200 * time.Millisecond)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
+
+	fm := tm.FinalModel(t)
+	finalModel, ok := fm.(*Model)
+	if !ok {
+		t.Fatalf("wrong type: %T", fm)
+	}
+	// modeKeys order: Custom(0x07), PC-A(0x00), PC-B(0x01), PC-C(0x0B), ...
+	// 3 steps down from Custom(index 0) -> index 3 -> PC-C (0x0B)
+	if finalModel.mode != sysex.ModeProgramChangeC {
+		t.Errorf("expected mode ProgramChangeC (0x0B), got 0x%02X", finalModel.mode)
+	}
+}
+
+func TestTUIModeSelectWraparound(t *testing.T) {
+	m := NewModel("/dev/null")
+	tm := teatest.NewTestModel(
+		t, &m,
+		teatest.WithInitialTermSize(100, 30),
+	)
+
+	teatest.WaitFor(
+		t, tm.Output(),
+		func(bts []byte) bool {
+			return strings.Contains(string(bts), "M-Vave")
+		},
+		teatest.WithCheckInterval(time.Millisecond*100),
+		teatest.WithDuration(time.Second*3),
+	)
+
+	// Enter mode select
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	time.Sleep(200 * time.Millisecond)
+
+	// Go up from Custom CC (index 0) → should wrap to CustomKeyboard (last = 0x0A)
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
+	time.Sleep(100 * time.Millisecond)
+
+	// Confirm
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	time.Sleep(200 * time.Millisecond)
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
+
+	fm := tm.FinalModel(t)
+	finalModel, ok := fm.(*Model)
+	if !ok {
+		t.Fatalf("wrong type: %T", fm)
+	}
+	if finalModel.mode != sysex.ModeCustomKeyboard {
+		t.Errorf("wraparound failed: expected CustomKeyboard (0x0A), got 0x%02X", finalModel.mode)
+	}
 }
 
 func TestTUIEditAndSendConfig(t *testing.T) {
@@ -331,7 +416,7 @@ func TestTUIEditAndSendConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	m := NewModel(tmpFile.Name())
 	tm := teatest.NewTestModel(

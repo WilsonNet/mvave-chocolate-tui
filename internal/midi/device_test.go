@@ -23,7 +23,7 @@ func TestHeadlessOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed after %v: %v", time.Since(start), err)
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 	t.Logf("OK: opened in %v", time.Since(start))
 }
 
@@ -59,7 +59,7 @@ func TestHeadlessFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 
 	steps := []struct {
 		name string
@@ -129,7 +129,7 @@ func TestAmidiWithReadFdHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	t.Log("raw fd opened for read")
 
 	go func() {
