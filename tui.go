@@ -5,8 +5,10 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,12 +27,9 @@ import (
 
 const defaultMidiDevice = "/dev/snd/midiC5D0"
 
+// SwitchConfig holds the Advanced Custom configuration for one footswitch.
 type SwitchConfig struct {
-	Type     string
 	CC       int
-	Channel  int
-	Value1   int
-	Value2   int
 	Latching bool
 }
 
@@ -100,24 +99,28 @@ type midiConnectedMsg struct {
 	err error
 }
 
+// deviceReadyMsg is posted after the on-connect auto-configure completes.
+type deviceReadyMsg struct {
+	deviceMode byte
+	err        string
+}
+
 type Model struct {
 	midiPath   string
 	midi       *midi.Device
 	midiMsgs   chan MidiMsg
 	ready      bool
 	connected  bool
-	mode       byte
+	deviceMode byte // last mode reported by device
 	log        []MidiMsg
 	statusMsg  string
 	errorMsg   string
 	width      int
 	height     int
 	logView    bool
-	modeSelect bool
 	editSwitch bool
 	editIdx    int
 	editField  int
-	modeBefore byte // saved on entering mode select, restored on cancel
 
 	config  [16]SwitchConfig
 	swState [16]SwitchState
@@ -127,7 +130,7 @@ type Model struct {
 	help     help.Model
 	keymap   keyMap
 
-	fields [6]textField
+	fields [2]textField // CC, Latch
 }
 
 type keyMap struct {
@@ -136,39 +139,33 @@ type keyMap struct {
 	Edit      key.Binding
 	Send      key.Binding
 	Read      key.Binding
-	Mode      key.Binding
 	LogToggle key.Binding
 	Up        key.Binding
 	Down      key.Binding
-	Left      key.Binding
-	Right     key.Binding
 	Confirm   key.Binding
 	Cancel    key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Tab, k.Edit, k.Send, k.Read, k.Mode, k.Quit}
+	return []key.Binding{k.Edit, k.Send, k.Read, k.Tab, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Tab, k.Edit, k.Send, k.Read, k.Mode},
-		{k.LogToggle, k.Up, k.Down, k.Left, k.Right, k.Quit},
+		{k.Edit, k.Send, k.Read},
+		{k.Tab, k.Up, k.Down, k.Quit},
 	}
 }
 
 var defaultKeymap = keyMap{
 	Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-	Tab:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "log view")),
-	Edit:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit switch")),
-	Send:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send all to device")),
-	Read:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "read config from device")),
-	Mode:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mode select")),
+	Tab:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "log")),
+	Edit:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+	Send:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
+	Read:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "read")),
 	LogToggle: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log")),
 	Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-	Left:      key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "switch left")),
-	Right:     key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "switch right")),
 	Confirm:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
 	Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 }
@@ -183,25 +180,72 @@ var (
 	highlight   = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 )
 
-func NewModel(midiPath string) Model {
-	cfg := [16]SwitchConfig{}
-	for i := range cfg {
-		cfg[i] = SwitchConfig{
-			Type:    "cc",
-			CC:      20 + i,
-			Channel: 0,
-			Value1:  127,
-			Value2:  0,
-		}
+// --- Config file persistence ---
+
+type savedConfig struct {
+	Switches [16]struct {
+		CC       int  `json:"cc"`
+		Latching bool `json:"latching"`
+	} `json:"switches"`
+}
+
+func configFilePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.Getenv("HOME")
 	}
+	return filepath.Join(dir, "mvave-chocolate-tui", "config.json")
+}
+
+func defaultSwitchConfig() [16]SwitchConfig {
+	var cfg [16]SwitchConfig
+	for i := range cfg {
+		cfg[i] = SwitchConfig{CC: i + 1} // CC 1–16 as defaults
+	}
+	return cfg
+}
+
+func loadConfig() [16]SwitchConfig {
+	cfg := defaultSwitchConfig()
+	data, err := os.ReadFile(configFilePath())
+	if err != nil {
+		return cfg
+	}
+	var saved savedConfig
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return cfg
+	}
+	for i, sw := range saved.Switches {
+		if sw.CC >= 0 && sw.CC <= 127 {
+			cfg[i].CC = sw.CC
+		}
+		cfg[i].Latching = sw.Latching
+	}
+	return cfg
+}
+
+func saveConfig(config [16]SwitchConfig) {
+	var saved savedConfig
+	for i, cfg := range config {
+		saved.Switches[i].CC = cfg.CC
+		saved.Switches[i].Latching = cfg.Latching
+	}
+	data, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(configFilePath()), 0755)
+	_ = os.WriteFile(configFilePath(), data, 0644)
+}
+
+// --- Model ---
+
+func NewModel(midiPath string) Model {
+	cfg := loadConfig()
 
 	cols := []table.Column{
 		{Title: "Switch", Width: 8},
-		{Title: "Type", Width: 6},
-		{Title: "Ch", Width: 4},
-		{Title: "CC/Note", Width: 8},
-		{Title: "Val1", Width: 6},
-		{Title: "Val2", Width: 6},
+		{Title: "CC", Width: 6},
 		{Title: "Latch", Width: 6},
 		{Title: "State", Width: 6},
 	}
@@ -220,25 +264,15 @@ func NewModel(midiPath string) Model {
 	vp := viewport.New(80, 10)
 	vp.SetContent("MIDI log...")
 
-	fields := [6]textField{
-		newTextField("cc/pc/note/sysex"),
-		newTextField("0-127"),
-		newTextField("0-15"),
-		newTextField("0-127"),
-		newTextField("0-127"),
-		newTextField("no/yes"),
-	}
-
 	return Model{
 		midiPath:  midiPath,
-		mode:      sysex.ModeCustom,
 		midiMsgs:  make(chan MidiMsg, 256),
 		config:    cfg,
 		table:     t,
 		viewport:  vp,
 		help:      help.New(),
 		keymap:    defaultKeymap,
-		fields:    fields,
+		fields:    [2]textField{newTextField("0-127"), newTextField("yes/no")},
 		statusMsg: "Starting...",
 	}
 }
@@ -255,14 +289,7 @@ func makeSwitchRow(i int, cfg SwitchConfig, st SwitchState) table.Row {
 	if cfg.Latching {
 		latch = "yes"
 	}
-	ccLabel := fmt.Sprintf("%d", cfg.CC)
-	switch cfg.Type {
-	case "note":
-		ccLabel = fmt.Sprintf("N%d", cfg.CC)
-	case "pc":
-		ccLabel = fmt.Sprintf("P%d", cfg.CC)
-	}
-	return table.Row{label, cfg.Type, fmt.Sprintf("%d", cfg.Channel), ccLabel, fmt.Sprintf("%d", cfg.Value1), fmt.Sprintf("%d", cfg.Value2), latch, state}
+	return table.Row{label, fmt.Sprintf("%d", cfg.CC), latch, state}
 }
 
 func (m *Model) refreshTable() {
@@ -274,10 +301,7 @@ func (m *Model) refreshTable() {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
-		tickCmd(),
-		connectMidiCmd(m.midiPath),
-	)
+	return tea.Batch(tickCmd(), connectMidiCmd(m.midiPath))
 }
 
 func tickCmd() tea.Cmd {
@@ -291,10 +315,59 @@ func connectMidiCmd(path string) tea.Cmd {
 	}
 }
 
+// autoConfigureCmd sets AdvancedCustom mode on the device and applies saved config.
+// Runs as a Cmd so it returns a deviceReadyMsg when done.
+func autoConfigureCmd(dev *midi.Device, config [16]SwitchConfig) tea.Cmd {
+	return func() tea.Msg {
+		// 1. Set Advanced Custom mode.
+		modeCmd := sysex.BuildModeChange(sysex.ModeAdvancedCustom)
+		if err := dev.SendSysex(modeCmd); err != nil {
+			return deviceReadyMsg{err: err.Error()}
+		}
+		time.Sleep(50 * time.Millisecond)
+
+		// 2. Write CC config for all 16 switches (RAM write only — byte[10]=0x0E).
+		for i, cfg := range config {
+			for _, msg := range sysex.SplitMessages(sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, 0)) {
+				if err := dev.SendSysex(msg); err != nil {
+					return deviceReadyMsg{err: err.Error()}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+
+		// 3. Read back mode to confirm.
+		raw, _ := dev.SendReceiveSysex(sysex.BuildReadSettings(), 3)
+		deviceMode := sysex.ModeAdvancedCustom
+		if len(raw) > 0 {
+			parsed := parseHexOutput(raw)
+			frames := sysex.FindSysExFrames(parsed, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
+			for _, f := range frames {
+				if cr := sysex.ParseConfigResponse(f); cr != nil {
+					deviceMode = cr.Mode
+				}
+			}
+		}
+		return deviceReadyMsg{deviceMode: deviceMode}
+	}
+}
+
+// parseHexOutput converts amidi -d output (space-separated hex) to bytes.
+func parseHexOutput(raw []byte) []byte {
+	clean := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			return r
+		}
+		return -1
+	}, string(raw))
+	data, _ := hex.DecodeString(clean)
+	return data
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	// Drain ALL pending MIDI messages on every Update call
+	// Drain ALL pending MIDI messages on every Update call.
 	for {
 		select {
 		case midiMsg := <-m.midiMsgs:
@@ -314,10 +387,23 @@ drained:
 			m.midi = msg.dev
 			m.connected = true
 			m.ready = true
-			m.statusMsg = fmt.Sprintf("Connected to %s — press 'r' to read device config", m.midiPath)
+			m.statusMsg = "Connected — setting Advanced Custom mode..."
 			cmds = append(cmds, m.midiReadLoop())
+			cmds = append(cmds, autoConfigureCmd(msg.dev, m.config))
 		}
 		return m, tea.Batch(cmds...)
+
+	case deviceReadyMsg:
+		if msg.err != "" {
+			m.statusMsg = "Config error: " + msg.err
+		} else {
+			m.deviceMode = msg.deviceMode
+			if msg.deviceMode == sysex.ModeAdvancedCustom {
+				m.statusMsg = "Advanced Custom active — config applied"
+			} else {
+				m.statusMsg = fmt.Sprintf("Warning: device mode=%02X, expected Advanced Custom", msg.deviceMode)
+			}
+		}
 
 	case tickMsg:
 		cmds = append(cmds, tickCmd())
@@ -331,11 +417,6 @@ drained:
 		m.table.SetHeight(msg.Height - 20)
 
 	case tea.KeyMsg:
-		if m.modeSelect {
-			cmds = append(cmds, m.handleModeSelect(msg))
-			m.refreshTable()
-			return m, tea.Batch(cmds...)
-		}
 		if m.editSwitch {
 			cmds = append(cmds, m.handleEdit(msg))
 			m.refreshTable()
@@ -349,16 +430,10 @@ drained:
 				m.midi = nil
 			}
 			return m, tea.Quit
-		case key.Matches(msg, m.keymap.Tab):
-			m.logView = !m.logView
-		case key.Matches(msg, m.keymap.LogToggle):
+		case key.Matches(msg, m.keymap.Tab), key.Matches(msg, m.keymap.LogToggle):
 			m.logView = !m.logView
 		case key.Matches(msg, m.keymap.Edit):
 			m.startEdit(m.table.Cursor())
-		case key.Matches(msg, m.keymap.Mode):
-			m.modeBefore = m.mode
-			m.modeSelect = true
-			m.statusMsg = "Select mode (↑↓ to choose, enter to confirm, esc to cancel)"
 		case key.Matches(msg, m.keymap.Read):
 			m.requestConfig()
 		case key.Matches(msg, m.keymap.Send):
@@ -367,10 +442,6 @@ drained:
 			m.table.MoveUp(1)
 		case key.Matches(msg, m.keymap.Down):
 			m.table.MoveDown(1)
-		case key.Matches(msg, m.keymap.Left):
-			m.table.MoveUp(4)
-		case key.Matches(msg, m.keymap.Right):
-			m.table.MoveDown(4)
 		}
 	}
 
@@ -427,7 +498,7 @@ func (m *Model) midiReadLoop() tea.Cmd {
 
 func (m *Model) processMidiMessage(msg MidiMsg) {
 	if strings.HasPrefix(msg.Hex, "DONE:") {
-		m.statusMsg = msg.Hex
+		m.statusMsg = strings.TrimPrefix(msg.Hex, "DONE: ")
 		m.log = append(m.log, msg)
 		return
 	}
@@ -457,14 +528,6 @@ func (m *Model) parseMidiBytes(data []byte) {
 			val := int(data[i+2])
 			m.setSwitchByCC(cc, val > 0)
 			i += 3
-		case b >= 0x90 && b < 0xA0:
-			if i+3 > len(data) {
-				return
-			}
-			note := int(data[i+1])
-			vel := int(data[i+2])
-			m.setSwitchByNote(note, vel > 0)
-			i += 3
 		case b == 0xF0:
 			end := -1
 			for j := i; j < len(data); j++ {
@@ -478,28 +541,13 @@ func (m *Model) parseMidiBytes(data []byte) {
 			}
 			frame := data[i : end+1]
 			m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "SYX " + hex.EncodeToString(frame)})
-
 			if sysex.IsOKResponse(frame) {
-				m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "OK response — config write accepted"})
+				m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "OK — config write accepted"})
 			}
-
 			if cr := sysex.ParseConfigResponse(frame); cr != nil {
-				if _, ok := sysex.ModeNames[cr.Mode]; ok {
-					m.mode = cr.Mode
-				}
-				// Only apply CC/Latch from the 0D41 dump in Custom CC mode.
-				// AdvancedCustom uses per-switch subcmds (0x30+) that are NOT in the
-				// 0D41 dump — applying cr.CC here would overwrite user config with stale
-				// static bytes from the factory dump.
-				if cr.Mode != sysex.ModeAdvancedCustom {
-					for bank := 0; bank < 4; bank++ {
-						for sw := bank * 4; sw < (bank+1)*4 && sw < 16; sw++ {
-							m.config[sw].CC = int(cr.CC[bank])
-							m.config[sw].Latching = cr.Latch[bank]
-						}
-					}
-				}
-				m.statusMsg = fmt.Sprintf("Config loaded — mode: %s", sysex.ModeNames[m.mode])
+				// Only update UI mode display; never overwrite config from dump
+				// (AdvCustom CC is not stored in 0D41 dump).
+				m.deviceMode = cr.Mode
 			}
 			i = end + 1
 		default:
@@ -510,20 +558,7 @@ func (m *Model) parseMidiBytes(data []byte) {
 
 func (m *Model) setSwitchByCC(cc int, pressed bool) {
 	for i, cfg := range m.config {
-		if cfg.Type == "cc" && cfg.CC == cc {
-			if pressed {
-				m.swState[i] = StatePressed
-			} else {
-				m.swState[i] = StateReleased
-			}
-			return
-		}
-	}
-}
-
-func (m *Model) setSwitchByNote(note int, pressed bool) {
-	for i, cfg := range m.config {
-		if cfg.Type == "note" && cfg.CC == note {
+		if cfg.CC == cc {
 			if pressed {
 				m.swState[i] = StatePressed
 			} else {
@@ -539,15 +574,11 @@ func (m *Model) startEdit(sw int) {
 	m.editIdx = sw
 	m.editField = 0
 	cfg := m.config[sw]
-	m.fields[0].set(cfg.Type)
-	m.fields[1].set(strconv.Itoa(cfg.CC))
-	m.fields[2].set(strconv.Itoa(cfg.Channel))
-	m.fields[3].set(strconv.Itoa(cfg.Value1))
-	m.fields[4].set(strconv.Itoa(cfg.Value2))
+	m.fields[0].set(strconv.Itoa(cfg.CC))
 	if cfg.Latching {
-		m.fields[5].set("yes")
+		m.fields[1].set("yes")
 	} else {
-		m.fields[5].set("no")
+		m.fields[1].set("no")
 	}
 	bank := sw/4 + 1
 	letter := 'A' + sw%4
@@ -560,232 +591,111 @@ func (m *Model) handleEdit(msg tea.KeyMsg) tea.Cmd {
 		m.editSwitch = false
 		m.statusMsg = "Edit cancelled"
 		return nil
-	case "tab":
+	case "tab", "down":
 		m.editField = (m.editField + 1) % len(m.fields)
 		return nil
-	case "shift+tab":
-		m.editField--
-		if m.editField < 0 {
-			m.editField = len(m.fields) - 1
-		}
+	case "shift+tab", "up":
+		m.editField = (m.editField - 1 + len(m.fields)) % len(m.fields)
 		return nil
 	case "enter":
 		m.applyEdit()
 		m.editSwitch = false
-		m.statusMsg = "Switch updated (press 's' to send to device)"
+		m.statusMsg = "Switch updated — press 's' to send to device"
 		return nil
-	case "up":
-		if m.editField > 0 {
-			m.editField--
-		}
-		return nil
-	case "down":
-		if m.editField < len(m.fields)-1 {
-			m.editField++
-		}
-		return nil
-	}
-
-	tf := &m.fields[m.editField]
-
-	switch msg.String() {
 	case "left":
-		tf.left()
+		m.fields[m.editField].left()
 	case "right":
-		tf.right()
+		m.fields[m.editField].right()
 	case "backspace":
-		tf.backspace()
+		m.fields[m.editField].backspace()
 	case "delete":
-		tf.deleteForward()
-	}
-
-	if len(msg.Runes) == 1 {
-		r := msg.Runes[0]
-		if r >= 32 && r < 127 {
-			tf.insert(r)
+		m.fields[m.editField].deleteForward()
+	default:
+		if len(msg.Runes) == 1 {
+			r := msg.Runes[0]
+			if r >= 32 && r < 127 {
+				m.fields[m.editField].insert(r)
+			}
 		}
 	}
-
 	return nil
 }
 
 func (m *Model) applyEdit() {
-	sw := m.editIdx
-	cfg := &m.config[sw]
-
-	if v := m.fields[0].value; v != "" {
-		cfg.Type = v
+	cfg := &m.config[m.editIdx]
+	if v, err := strconv.Atoi(m.fields[0].value); err == nil && v >= 0 && v <= 127 {
+		cfg.CC = v
 	}
-	if v, err := strconv.Atoi(m.fields[1].value); err == nil {
-		if v >= 0 && v <= 127 {
-			cfg.CC = v
-		}
-	}
-	if v, err := strconv.Atoi(m.fields[2].value); err == nil {
-		if v >= 0 && v <= 15 {
-			cfg.Channel = v
-		}
-	}
-	if v, err := strconv.Atoi(m.fields[3].value); err == nil {
-		if v >= 0 && v <= 127 {
-			cfg.Value1 = v
-		}
-	}
-	if v, err := strconv.Atoi(m.fields[4].value); err == nil {
-		if v >= 0 && v <= 127 {
-			cfg.Value2 = v
-		}
-	}
-	cfg.Latching = strings.ToLower(m.fields[5].value) == "yes" || m.fields[5].value == "1"
+	cfg.Latching = strings.ToLower(m.fields[1].value) == "yes" || m.fields[1].value == "1"
 }
 
-var modeKeys = []byte{
-	sysex.ModeCustom, sysex.ModeProgramChangeA, sysex.ModeProgramChangeB, sysex.ModeProgramChangeC,
-	sysex.ModeKeyboardA, sysex.ModeKeyboardB, sysex.ModeMultiMedia, sysex.ModeTouchScreen,
-	sysex.ModeManufacturer, sysex.ModeVideo, sysex.ModeAdvancedCustom, sysex.ModeCustomKeyboard,
-}
-
-func (m *Model) handleModeSelect(msg tea.KeyMsg) tea.Cmd {
-	if key.Matches(msg, m.keymap.Cancel) {
-		m.mode = m.modeBefore
-		m.modeSelect = false
-		m.statusMsg = "Mode selection cancelled"
-		return nil
-	}
-	if key.Matches(msg, m.keymap.Confirm) {
-		m.modeSelect = false
-		m.sendModeChange()
-		m.statusMsg = fmt.Sprintf("Mode set to: %s", sysex.ModeNames[m.mode])
-		return nil
-	}
-	if key.Matches(msg, m.keymap.Up) || key.Matches(msg, m.keymap.Left) {
-		idx := modeIndex(m.mode) - 1
-		if idx < 0 {
-			idx = len(modeKeys) - 1
-		}
-		m.mode = modeKeys[idx]
-		return nil
-	}
-	if key.Matches(msg, m.keymap.Down) || key.Matches(msg, m.keymap.Right) {
-		idx := modeIndex(m.mode) + 1
-		if idx >= len(modeKeys) {
-			idx = 0
-		}
-		m.mode = modeKeys[idx]
-		return nil
-	}
-	return nil
-}
-
-func modeIndex(mode byte) int {
-	for i, k := range modeKeys {
-		if k == mode {
-			return i
-		}
-	}
-	return 0
-}
-
-func (m *Model) sendModeChange() {
-	if m.midi == nil {
-		m.statusMsg = "Not connected"
-		return
-	}
-	midiDev := m.midi
-	mode := m.mode
-	m.statusMsg = "Sending mode change..."
-
-	go func() {
-		cmd := sysex.BuildModeChange(mode)
-		if err := midiDev.SendSysex(cmd); err != nil {
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-			return
-		}
-		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: mode change sent"}
-	}()
-}
-
+// sendAllConfig writes the full Advanced Custom config to the device:
+// 1. Set mode to Advanced Custom.
+// 2. For each switch: BuildAdvCustomCC (RAM write, byte[10]=0x0E).
+// No init sequence — TestHeadlessAdvCustomCC48 confirmed it's not needed.
+// No flash write — flash encoding is not linear (CC=99 stores as 0x40/0x31, not 99).
 func (m *Model) sendAllConfig() {
 	if m.midi == nil {
 		m.statusMsg = "Not connected"
 		return
 	}
-
 	config := m.config
-	mode := m.mode
 	midiDev := m.midi
-	m.statusMsg = "Sending config to device..."
+	m.statusMsg = "Sending Advanced Custom config..."
 
 	go func() {
-		for _, cmd := range sysex.BuildInitSequence() {
-			if err := midiDev.SendSysex(cmd); err != nil {
-				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-				return
-			}
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-			time.Sleep(30 * time.Millisecond)
-		}
-
-		// Init sequence message 3 always forces ModeCustom; re-assert the user's mode.
-		modeCmd := sysex.BuildModeChange(mode)
+		modeCmd := sysex.BuildModeChange(sysex.ModeAdvancedCustom)
 		if err := midiDev.SendSysex(modeCmd); err != nil {
 			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 			return
 		}
 		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(modeCmd)}
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		for i, cfg := range config {
-			if mode == sysex.ModeAdvancedCustom {
-				// Advanced Custom dual write:
-				// 1. RAM write (byte[10]=0x0E): immediate effect in device RAM
-				// 2. Flash write (byte[10]=0x00): persists to device flash (survives USB reconnect)
-				// Both paths are ACKd by device; flash write updates the 0D41 config dump.
-				for _, data := range [][]byte{
-					sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel)),
-					sysex.BuildAdvCustomCCFlash(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel)),
-				} {
-					for _, cmd := range sysex.SplitMessages(data) {
-						if err := midiDev.SendSysex(cmd); err != nil {
-							m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-							return
-						}
-						m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-						time.Sleep(40 * time.Millisecond)
-					}
+			for _, cmd := range sysex.SplitMessages(sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, 0)) {
+				if err := midiDev.SendSysex(cmd); err != nil {
+					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+					return
 				}
-			} else {
-				for _, cmd := range sysex.SplitMessages(sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))) {
-					if err := midiDev.SendSysex(cmd); err != nil {
-						m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-						return
-					}
-					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-					time.Sleep(40 * time.Millisecond)
-				}
+				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
+				time.Sleep(20 * time.Millisecond)
 			}
 		}
-		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: all config sent"}
+
+		saveConfig(config)
+		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: all config sent and saved"}
 	}()
 }
 
+// requestConfig reads the device mode via combined amidi send+receive.
 func (m *Model) requestConfig() {
 	if m.midi == nil {
 		m.statusMsg = "Not connected"
 		return
 	}
-	midiDev := m.midi
-	m.statusMsg = "Reading device config..."
+	dev := m.midi
+	m.statusMsg = "Reading device mode..."
 
 	go func() {
-		cmd := sysex.BuildReadSettings()
-		if err := midiDev.SendSysex(cmd); err != nil {
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+		raw, err := dev.SendReceiveSysex(sysex.BuildReadSettings(), 3)
+		if err != nil {
+			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: read: " + err.Error()}
 			return
 		}
-		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: read config sent — check log for response"}
+		parsed := parseHexOutput(raw)
+		frames := sysex.FindSysExFrames(parsed, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
+		if len(frames) == 0 {
+			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: no config frame in response"}
+			return
+		}
+		for _, f := range frames {
+			if cr := sysex.ParseConfigResponse(f); cr != nil {
+				name := sysex.ModeNames[cr.Mode]
+				m.midiMsgs <- MidiMsg{Timestamp: time.Now(),
+					Hex: fmt.Sprintf("DONE: device mode=0x%02X (%s)", cr.Mode, name)}
+			}
+		}
 	}()
 }
 
@@ -795,35 +705,31 @@ func (m *Model) View() string {
 		if m.errorMsg != "" {
 			err = redStyle.Render("\nError: " + m.errorMsg)
 		}
-		return fmt.Sprintf("M-Vave Chocolate Config\n\nConnecting to %s...%s\n\nPress q to quit", m.midiPath, err)
+		return fmt.Sprintf("M-Vave Chocolate — Advanced Custom\n\nConnecting to %s...%s\n\nPress q to quit", m.midiPath, err)
 	}
 	if m.width == 0 {
 		return "Loading..."
 	}
 
-	var conn string
+	connStr := redStyle.Render("○ Disconnected")
 	if m.connected {
-		conn = greenStyle.Render("● Connected")
-	} else {
-		conn = redStyle.Render("○ Disconnected")
+		modeOK := m.deviceMode == sysex.ModeAdvancedCustom || m.deviceMode == 0
+		if modeOK {
+			connStr = greenStyle.Render("● Advanced Custom")
+		} else {
+			connStr = greenStyle.Render("● Connected") + " " +
+				redStyle.Render(fmt.Sprintf("[device mode=%02X?]", m.deviceMode))
+		}
 	}
-
-	modeStr := fmt.Sprintf("Mode: %s", sysex.ModeNames[m.mode])
 
 	var body string
 	switch {
-	case m.modeSelect:
-		body = m.renderModeSelect()
 	case m.editSwitch:
 		body = m.renderEdit()
 	case m.logView:
 		body = m.viewport.View()
 	default:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			modeStr,
-			"",
-			m.table.View(),
-		)
+		body = m.table.View()
 	}
 
 	errStr := ""
@@ -832,7 +738,8 @@ func (m *Model) View() string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("M-Vave Chocolate Config")+"  "+conn,
+		titleStyle.Render("M-Vave Chocolate")+"  "+connStr,
+		"",
 		body,
 		statusStyle.Render(m.statusMsg),
 		errStr,
@@ -840,34 +747,13 @@ func (m *Model) View() string {
 	)
 }
 
-func (m *Model) renderModeSelect() string {
-	var lines []string
-	lines = append(lines, "Select operating mode:")
-	lines = append(lines, "")
-
-	for _, k := range modeKeys {
-		name := sysex.ModeNames[k]
-		if k == m.mode {
-			name = highlight.Render("> " + name)
-		} else {
-			name = "  " + name
-		}
-		lines = append(lines, name)
-	}
-	lines = append(lines, "")
-	lines = append(lines, "↑↓ to choose, enter to confirm, esc to cancel")
-	return strings.Join(lines, "\n")
-}
-
 func (m *Model) renderEdit() string {
 	bank := m.editIdx/4 + 1
 	letter := 'A' + m.editIdx%4
-
-	labels := []string{"Type", "CC/Note", "Channel", "On Value", "Off Value", "Latching"}
+	labels := []string{"CC (0-127)", "Latch (yes/no)"}
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Editing switch %d%c:", bank, letter))
 	lines = append(lines, "")
-
 	for i := range m.fields {
 		prefix := "  "
 		if i == m.editField {
@@ -876,7 +762,7 @@ func (m *Model) renderEdit() string {
 		lines = append(lines, fmt.Sprintf("%s%s: %s", prefix, labels[i], m.fields[i].display()))
 	}
 	lines = append(lines, "")
-	lines = append(lines, "tab/↑↓: navigate | enter: save | esc: cancel")
+	lines = append(lines, "tab/↑↓: navigate  enter: save  esc: cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -890,7 +776,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "auto-detected: %s\n", detected)
 		} else {
 			fmt.Fprintf(os.Stderr, "No M-Vave Chocolate found (SINCO/FootCtrl).\n")
-			fmt.Fprintf(os.Stderr, "Plug it in and try again, or specify path: mvave-chocolate-tui /dev/snd/midiC5D0\n")
+			fmt.Fprintf(os.Stderr, "Plug in with side switch on U, or specify path: mvave-chocolate-tui /dev/snd/midiC5D0\n")
 			os.Exit(1)
 		}
 	}

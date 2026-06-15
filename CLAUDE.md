@@ -38,11 +38,13 @@ internal/sysex/protocol.go  — SysEx builders + checksum + all protocol constan
 internal/detect/detect.go   — Scans /proc/asound/cards for SINCO/FootCtrl/USB-Midi
 ```
 
-The `Model` struct holds 16 `SwitchConfig` entries (4 banks × 4 switches) plus a buffered `midiMsgs chan MidiMsg` (cap 256) for goroutine→UI communication.
+The `Model` struct holds 16 `SwitchConfig{CC int; Latching bool}` entries plus a buffered `midiMsgs chan MidiMsg` (cap 256) for goroutine→UI communication. Config persists to `~/.config/mvave-chocolate-tui/config.json` (loaded on startup, saved after send).
 
 ## Critical patterns
 
-**Async MIDI ops**: `sendAllConfig`, `sendModeChange`, `requestConfig` each snapshot the `*midi.Device` pointer and spawn a goroutine. Results return via `m.midiMsgs`. Never mutate `m` from inside those goroutines.
+**TUI is Advanced Custom only**: All mode selection UI is removed. On connect, `autoConfigureCmd` (a `tea.Cmd`) immediately sends `BuildModeChange(ModeAdvancedCustom)` + all 16 `BuildAdvCustomCC` writes and then reads back the mode. No init sequence, no flash writes.
+
+**Async MIDI ops**: `sendAllConfig` and `requestConfig` snapshot the `*midi.Device` pointer and spawn a goroutine. Results return via `m.midiMsgs`. Never mutate `m` from inside those goroutines.
 
 **Channel drain**: Every `Update()` call drains `m.midiMsgs` completely before processing the incoming message. This prevents goroutine deadlocks when the channel fills.
 
@@ -56,11 +58,13 @@ Split into two 7-bit bytes: `low = v & 0x7F`, `high = (v >> 7) & 0x7F`. See `Kno
 
 **Switch indexing**: Switches are `[0..15]`. Bank = `idx/4`, switch-in-bank = `idx%4`. Label format: `{bank+1}{A..D}` (e.g., index 5 → `2B`).
 
-**Mode dispatch in sendAllConfig**: After the init sequence and mode re-assertion, `sendAllConfig` dispatches by mode:
-- `ModeAdvancedCustom` → dual write per switch: `BuildAdvCustomCC` (RAM, byte[10]=0x0E, immediate) + `BuildAdvCustomCCFlash` (flash, byte[10]=0x00, persistent) = 6 msgs per switch × 16 = 96 msgs
-- all other modes → `BuildCCConfig` (bank-shared subcmds, 2 msgs per switch)
+**sendAllConfig sequence** (RAM-only, no init, no flash):
+1. `BuildModeChange(ModeAdvancedCustom)` — 1 msg
+2. For each of 16 switches: `BuildAdvCustomCC` → 3 msgs each (CC#, latch, type) — 48 msgs total
+3. `saveConfig(config)` — writes JSON to disk
+4. Sends `DONE: all config sent and saved` to `midiMsgs`
 
-**AdvCustom parseMidiBytes guard**: When `ParseConfigResponse` returns and mode=AdvancedCustom, the `CC`/`Latch` fields from the 0D41 dump are stale static bytes — NOT live CC values. `parseMidiBytes` skips the CC/Latch update in AdvCustom mode to prevent user config being overwritten by the stale dump.
+**No flash writes**: Flash write (byte[10]=0x00) encoding is non-linear — CC=99 stores as bytes `(0x40, 0x31)` in the 0D41 dump, NOT as 99. Flash writes caused wrong CC values to restore. Use RAM writes only.
 
 ## SysEx protocol reference
 
@@ -68,11 +72,11 @@ Vendor `00 32` (Jieli). Partial reverse-engineering at [cbix/mvave-chocolate-sys
 
 | Function | Purpose |
 |---|---|
-| `BuildInitSequence()` | 12-message handshake — always send before config writes |
+| `BuildInitSequence()` | 12-message handshake — NOT used by TUI (forces ModeCustom in msg 3; not needed for AdvCustom) |
 | `BuildModeChange(mode)` | Switch operating mode (value in `ModeCustom`, `ModeAdvancedCustom`, etc.) |
 | `BuildCCConfig(idx, cc, latch, chan)` | Custom CC mode: 2 msgs (CC + latch) for bank `idx/4`; use `SplitMessages` |
 | `BuildAdvCustomCC(idx, cc, latch, chan)` | Advanced Custom RAM write: 3 msgs, byte[10]=0x0E — immediate effect |
-| `BuildAdvCustomCCFlash(idx, cc, latch, chan)` | Advanced Custom flash write: 3 msgs, byte[10]=0x00 — persists to 0D41 dump |
+| `BuildAdvCustomCCFlash(idx, cc, latch, chan)` | Advanced Custom flash write: 3 msgs, byte[10]=0x00 — probe/research only; encoding non-linear |
 | `BuildReadSettings()` | Request 0D 49 config dump — **mode byte live, CC values STATIC** |
 | `IsOKResponse(frame)` | Check for `00 32 01 08` ACK |
 | `ParseConfigResponse(frame)` | Decode 0D 49 frame — only `Mode` field is reliable |
@@ -107,7 +111,7 @@ Subcmd formula: `AdvCustomSubcmdBase + switchIndex*AdvCustomSwitchStride + attr`
 | `0x0E` (AdvCustomLiveWrite) | RAM write — immediate effect | unchanged | no (RAM only) |
 | `0x00` | Flash write — persistent | 4 bytes change (including checksum) | yes |
 
-`sendAllConfig` sends BOTH paths per switch. `BuildAdvCustomCC` = RAM, `BuildAdvCustomCCFlash` = flash.
+TUI uses RAM path only (`BuildAdvCustomCC`). Flash path (`BuildAdvCustomCCFlash`) is retained for research/testing only.
 
 ### Readback caveat (reverse-engineered)
 
@@ -118,10 +122,6 @@ The `0D 41` → `0D 49` response:
 - `BuildReadSettings()` is reliable only for reading current operating mode.
 - Two read variants: standard `10 7E` (1173 bytes) and `10 6A` (990 bytes, all zeros — no useful data).
 - **Raw fd vs ALSA sequencer**: `midiReadLoop` reads from `/dev/snd/midiCXDX` (raw fd). SysEx responses to `BuildReadSettings()` arrive on the ALSA sequencer port used by amidi — NOT on the raw fd. Use `amidi -S <hex> -d --timeout <secs>` (combined) to capture SysEx responses.
-
-### Init sequence note
-
-`BuildInitSequence()` message 3 forces `ModeCustom (0x07)`. `sendAllConfig` re-asserts the user's chosen mode immediately after the init sequence to counteract this.
 
 ## Device requirements
 

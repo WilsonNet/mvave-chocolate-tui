@@ -70,6 +70,26 @@ func (d *Device) SendSysex(data []byte) error {
 	return err
 }
 
+// SendReceiveSysex sends a SysEx message and returns raw bytes received within
+// timeoutSecs seconds of inactivity. Uses amidi --timeout (seconds, not ms).
+// Both send and receive happen in one port-open window so ACKs aren't lost.
+func (d *Device) SendReceiveSysex(data []byte, timeoutSecs int) ([]byte, error) {
+	if !d.useAmidi {
+		return nil, fmt.Errorf("SendReceiveSysex: not an ALSA device")
+	}
+	if timeoutSecs < 1 {
+		timeoutSecs = 1
+	}
+	hexStr := hex.EncodeToString(data)
+	cmd := exec.Command("amidi", "-p", d.alsaDev,
+		"-S", hexStr, "-d", "--timeout", fmt.Sprintf("%d", timeoutSecs))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("amidi: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
 func (d *Device) Close() error {
 	if d.f != nil {
 		return d.f.Close()

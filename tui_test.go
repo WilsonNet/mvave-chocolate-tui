@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,8 +188,8 @@ func TestSendAllConfigWithMockDevice(t *testing.T) {
 	m.sendAllConfig()
 
 	// After send, status should reflect sending (async, so it shows this immediately)
-	if m.statusMsg != "Sending config to device..." {
-		t.Errorf("status after send: expected 'Sending config to device...', got '%s'", m.statusMsg)
+	if m.statusMsg != "Sending Advanced Custom config..." {
+		t.Errorf("status after send: expected 'Sending Advanced Custom config...', got '%s'", m.statusMsg)
 	}
 	_ = mock // used for reference pattern
 }
@@ -280,138 +281,6 @@ func TestTUIQuitReleasesDevice(t *testing.T) {
 	}
 }
 
-func TestTUIModeSelectAndCancel(t *testing.T) {
-	m := NewModel("/dev/null")
-	initialMode := m.mode
-	tm := teatest.NewTestModel(
-		t, &m,
-		teatest.WithInitialTermSize(100, 30),
-	)
-
-	teatest.WaitFor(
-		t, tm.Output(),
-		func(bts []byte) bool {
-			return strings.Contains(string(bts), "M-Vave")
-		},
-		teatest.WithCheckInterval(time.Millisecond*100),
-		teatest.WithDuration(time.Second*3),
-	)
-
-	// Enter mode select
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	time.Sleep(200 * time.Millisecond)
-
-	// Navigate: down x2, up x1 → both directions work, no crash
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	time.Sleep(50 * time.Millisecond)
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	time.Sleep(50 * time.Millisecond)
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel and verify mode unchanged
-	tm.Send(tea.KeyMsg{Type: tea.KeyEscape})
-	time.Sleep(200 * time.Millisecond)
-
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
-
-	fm := tm.FinalModel(t)
-	finalModel, ok := fm.(*Model)
-	if !ok {
-		t.Fatalf("wrong type: %T", fm)
-	}
-	if finalModel.mode != initialMode {
-		t.Errorf("mode changed after cancel: was %d, got %d", initialMode, finalModel.mode)
-	}
-}
-
-func TestTUIModeSelectAndConfirm(t *testing.T) {
-	m := NewModel("/dev/null")
-	tm := teatest.NewTestModel(
-		t, &m,
-		teatest.WithInitialTermSize(100, 30),
-	)
-
-	teatest.WaitFor(
-		t, tm.Output(),
-		func(bts []byte) bool {
-			return strings.Contains(string(bts), "M-Vave")
-		},
-		teatest.WithCheckInterval(time.Millisecond*100),
-		teatest.WithDuration(time.Second*3),
-	)
-
-	// Enter mode select
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	time.Sleep(200 * time.Millisecond)
-
-	// Navigate down 3 times → ProgramChangeC (0x0B)
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	time.Sleep(100 * time.Millisecond)
-
-	// Confirm
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
-	time.Sleep(200 * time.Millisecond)
-
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
-
-	fm := tm.FinalModel(t)
-	finalModel, ok := fm.(*Model)
-	if !ok {
-		t.Fatalf("wrong type: %T", fm)
-	}
-	// modeKeys order: Custom(0x07), PC-A(0x00), PC-B(0x01), PC-C(0x0B), ...
-	// 3 steps down from Custom(index 0) -> index 3 -> PC-C (0x0B)
-	if finalModel.mode != sysex.ModeProgramChangeC {
-		t.Errorf("expected mode ProgramChangeC (0x0B), got 0x%02X", finalModel.mode)
-	}
-}
-
-func TestTUIModeSelectWraparound(t *testing.T) {
-	m := NewModel("/dev/null")
-	tm := teatest.NewTestModel(
-		t, &m,
-		teatest.WithInitialTermSize(100, 30),
-	)
-
-	teatest.WaitFor(
-		t, tm.Output(),
-		func(bts []byte) bool {
-			return strings.Contains(string(bts), "M-Vave")
-		},
-		teatest.WithCheckInterval(time.Millisecond*100),
-		teatest.WithDuration(time.Second*3),
-	)
-
-	// Enter mode select
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	time.Sleep(200 * time.Millisecond)
-
-	// Go up from Custom CC (index 0) → should wrap to CustomKeyboard (last = 0x0A)
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
-	time.Sleep(100 * time.Millisecond)
-
-	// Confirm
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
-	time.Sleep(200 * time.Millisecond)
-
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
-
-	fm := tm.FinalModel(t)
-	finalModel, ok := fm.(*Model)
-	if !ok {
-		t.Fatalf("wrong type: %T", fm)
-	}
-	if finalModel.mode != sysex.ModeCustomKeyboard {
-		t.Errorf("wraparound failed: expected CustomKeyboard (0x0A), got 0x%02X", finalModel.mode)
-	}
-}
-
 func TestTUIEditAndSendConfig(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "midi-send-*")
 	if err != nil {
@@ -447,9 +316,7 @@ func TestTUIEditAndSendConfig(t *testing.T) {
 		teatest.WithDuration(time.Second*3),
 	)
 
-	// Navigate to CC field (field 1, press tab once)
-	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
-
+	// CC is field 0 (active on edit start) — no tab needed.
 	// Clear and set CC to 44
 	for range "20" {
 		tm.Send(tea.KeyMsg{Type: tea.KeyBackspace})
@@ -479,8 +346,8 @@ func TestTUIEditAndSendConfig(t *testing.T) {
 		t, tm.Output(),
 		func(bts []byte) bool {
 			s := string(bts)
-			return strings.Contains(s, "Sending config") ||
-				strings.Contains(s, "sent to device") ||
+			return strings.Contains(s, "Sending Advanced Custom") ||
+				strings.Contains(s, "all config sent") ||
 				strings.Contains(s, "DONE")
 		},
 		teatest.WithCheckInterval(time.Millisecond*100),
@@ -527,17 +394,16 @@ func TestTUIAdvancedCustomSendAllConfig(t *testing.T) {
 	}
 	defer func() { _ = dev.Close() }()
 
-	// Build a Model in Advanced Custom mode with switch 0 set to CC=48.
+	// Build a Model with switch 0 set to CC=48 (TUI is always Advanced Custom now).
 	m := NewModel(path)
 	m.midi = dev
-	m.mode = sysex.ModeAdvancedCustom
 	m.config[0].CC = 48
 
 	// Kick off the goroutine-based send.
 	m.sendAllConfig()
 
 	// Drain midiMsgs until "DONE" arrives or timeout.
-	// sendAllConfig sends: 12 init + 1 mode + 16 switches × 3 msgs = 61 total.
+	// sendAllConfig sends: 1 mode + 16 switches × 3 msgs = 49 total (no init sequence).
 	deadline := time.After(45 * time.Second)
 	var txLog []string
 loop:
@@ -636,7 +502,6 @@ func TestTUIAdvancedCustomFullJourney(t *testing.T) {
 
 	m1 := NewModel(path)
 	m1.midi = dev1
-	m1.mode = sysex.ModeAdvancedCustom
 	m1.config[0].CC = 48
 
 	m1.sendAllConfig()
@@ -690,12 +555,7 @@ loop1:
 
 	m2 := NewModel(path)
 	m2.midi = dev2
-	m2.mode = sysex.ModeAdvancedCustom // user selects Advanced Custom again
-	// m2.config[0].CC starts at default (20), not 48 — this is what we verify is preserved
-
-	// Start the raw fd reader so midiReadLoop can capture device responses.
-	go func() { m2.midiReadLoop()() }()
-	time.Sleep(50 * time.Millisecond)
+	// m2.config[0].CC starts at default (1), not 48 — this is what we verify is preserved
 
 	// "Read from device"
 	m2.requestConfig()
@@ -725,20 +585,13 @@ loop2:
 	}
 	t.Logf("Session 2: received %d msgs (DONE=%v)", len(rxLog), doneReceived)
 
-	// Verify the readback updated m2.mode to AdvancedCustom.
+	// requestConfig sends DONE: device mode=0xNN (Name) to midiMsgs.
 	foundMode := false
 	for _, entry := range rxLog {
-		if strings.HasPrefix(entry, "RX ") {
-			hexStr := strings.TrimPrefix(entry, "RX ")
-			data, _ := hex.DecodeString(strings.ReplaceAll(hexStr, " ", ""))
-			frames := sysex.FindSysExFrames(data, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
-			for _, f := range frames {
-				if cr := sysex.ParseConfigResponse(f); cr != nil {
-					t.Logf("  Readback: mode=0x%02X (%s)", cr.Mode, sysex.ModeNames[cr.Mode])
-					if cr.Mode == sysex.ModeAdvancedCustom {
-						foundMode = true
-					}
-				}
+		if strings.HasPrefix(entry, "DONE: device mode=") {
+			t.Logf("  Readback: %s", strings.TrimPrefix(entry, "DONE: "))
+			if strings.Contains(entry, fmt.Sprintf("0x%02X", sysex.ModeAdvancedCustom)) {
+				foundMode = true
 			}
 		}
 	}
@@ -758,12 +611,12 @@ loop2:
 	//
 	// What we verify here: the fix prevents silent CC corruption from stale readback.
 	if foundMode {
-		if m2.mode == sysex.ModeAdvancedCustom {
-			t.Logf("PASS: m2.mode correctly set to AdvancedCustom from readback")
+		if m2.deviceMode == sysex.ModeAdvancedCustom {
+			t.Logf("PASS: m2.deviceMode correctly set to AdvancedCustom from readback")
 		}
-		// m2.config[0].CC should still be 20 (default) — NOT overwritten by stale dump.
+		// m2.config[0].CC should still be 1 (default) — NOT overwritten by stale dump.
 		// If it were overwritten, it would be some static factory value (not 48).
-		t.Logf("m2.config[0].CC = %d (default=20, stale-dump corruption would set a different value)",
+		t.Logf("m2.config[0].CC = %d (default=1, stale-dump corruption would set a different value)",
 			m2.config[0].CC)
 	}
 
@@ -784,7 +637,7 @@ func TestTUILogViewToggle(t *testing.T) {
 	teatest.WaitFor(
 		t, tm.Output(),
 		func(bts []byte) bool {
-			return strings.Contains(string(bts), "M-Vave Chocolate Config")
+			return strings.Contains(string(bts), "M-Vave Chocolate")
 		},
 		teatest.WithCheckInterval(time.Millisecond*100),
 		teatest.WithDuration(time.Second*3),
