@@ -6,20 +6,20 @@
 // https://github.com/cbix/mvave-chocolate-sysex
 package sysex
 
-// Operating mode constants
+// Operating mode constants — value is sent directly in BuildModeChange payload.
 const (
-	ModeCustom         = 0x07
-	ModeProgramChangeA = 0x00
-	ModeProgramChangeB = 0x01
-	ModeProgramChangeC = 0x0B
-	ModeKeyboardA      = 0x03
-	ModeKeyboardB      = 0x04
-	ModeMultiMedia     = 0x05
-	ModeTouchScreen    = 0x02
-	ModeManufacturer   = 0x06
-	ModeVideo          = 0x08
-	ModeAdvancedCustom = 0x09
-	ModeCustomKeyboard = 0x0A
+	ModeCustom         = byte(0x07)
+	ModeProgramChangeA = byte(0x00)
+	ModeProgramChangeB = byte(0x01)
+	ModeProgramChangeC = byte(0x0B)
+	ModeKeyboardA      = byte(0x03)
+	ModeKeyboardB      = byte(0x04)
+	ModeMultiMedia     = byte(0x05)
+	ModeTouchScreen    = byte(0x02)
+	ModeManufacturer   = byte(0x06)
+	ModeVideo          = byte(0x08)
+	ModeAdvancedCustom = byte(0x09)
+	ModeCustomKeyboard = byte(0x0A)
 )
 
 var ModeNames = map[byte]string{
@@ -36,6 +36,30 @@ var ModeNames = map[byte]string{
 	ModeAdvancedCustom: "Advanced Custom",
 	ModeCustomKeyboard: "Custom Keyboard",
 }
+
+// Custom CC mode — bank-shared CC/latch subcmds.
+// Subcmd for bank n: CustomCCSubcmdBase + n*CustomBankStride (CC), +1 for latch.
+// Verified: device ACKs these but they are NOT reflected in 0D41 readback.
+const (
+	CustomCCSubcmdBase    = byte(0x02) // bank 0 CC; bank n = base + n*CustomBankStride
+	CustomLatchSubcmdBase = byte(0x03) // bank 0 latch; bank n = base + n*CustomBankStride
+	CustomBankStride      = 2          // subcmd increment per bank
+)
+
+// Advanced Custom mode — per-switch subcmds (reverse-engineered via device probing).
+// Subcmd = AdvCustomSubcmdBase + switchIndex*AdvCustomSwitchStride + attr.
+// byte[10] must be AdvCustomLiveWrite (0x0E) for the write to take effect immediately.
+// Verified: device ACKs all subcmds in 0x30–0x6F range with byte[10]=0x0E.
+// Writes with byte[10]=0x00 update the 0D41 config dump instead of device RAM.
+const (
+	AdvCustomSubcmdBase   = byte(0x30) // first switch, first attr
+	AdvCustomSwitchStride = 4          // subcmds per switch (4 attrs per switch)
+	AdvCustomAttrCC       = 0          // attr offset: CC# value (0–127)
+	AdvCustomAttrLatch    = 1          // attr offset: latch mode (0=momentary, 1=latching)
+	AdvCustomAttrType     = 2          // attr offset: switch type (see AdvCustomSwitchType*)
+	AdvCustomLiveWrite    = byte(0x0E) // byte[10]: write reaches device RAM (immediate effect)
+	AdvCustomSwitchTypeCC = byte(0x07) // switch type: output CC message on press
+)
 
 func BuildModeChange(mode byte) []byte {
 	msg := []byte{
@@ -54,10 +78,50 @@ func BuildModeChange(mode byte) []byte {
 	return msg
 }
 
+// BuildAdvCustomCC builds the SysEx messages to configure one switch in Advanced Custom mode.
+// Returns 3 concatenated messages (CC#, latch, switch type); use SplitMessages before sending.
+// Subcmds use AdvCustomLiveWrite (byte[10]=0x0E) so writes take effect immediately in device RAM.
+//
+// Per-switch subcmd layout (stride AdvCustomSwitchStride=4):
+//
+//	AdvCustomSubcmdBase + switchIndex*4 + AdvCustomAttrCC    = CC# value
+//	AdvCustomSubcmdBase + switchIndex*4 + AdvCustomAttrLatch = latch mode
+//	AdvCustomSubcmdBase + switchIndex*4 + AdvCustomAttrType  = AdvCustomSwitchTypeCC (0x07)
+func BuildAdvCustomCC(switchIndex int, ccValue byte, latching bool, channel byte) []byte {
+	base := AdvCustomSubcmdBase + byte(switchIndex)*AdvCustomSwitchStride
+
+	latchVal := byte(0)
+	if latching {
+		latchVal = 1
+	}
+
+	buildOne := func(subcmd, val byte) []byte {
+		msg := []byte{
+			0xF0, 0x00, 0x32, 0x09, 0x49,
+			0x00, 0x00, 0x00, 0x02,
+			subcmd, AdvCustomLiveWrite, 0x00, 0x00,
+			0x10,
+			0x00, 0x00, 0x00,
+			val,
+			0x00, 0x00,
+			0xF7,
+		}
+		cs1, cs2 := Checksum(msg[1 : len(msg)-3])
+		msg[len(msg)-3] = cs1
+		msg[len(msg)-2] = cs2
+		return msg
+	}
+
+	result := buildOne(base+AdvCustomAttrCC, ccValue)
+	result = append(result, buildOne(base+AdvCustomAttrLatch, latchVal)...)
+	result = append(result, buildOne(base+AdvCustomAttrType, AdvCustomSwitchTypeCC)...)
+	return result
+}
+
 func BuildCCConfig(switchIndex int, ccValue byte, latching bool, channel byte) []byte {
 	bank := switchIndex / 4
 
-	ccSubcmd := byte(0x02 + bank*2)
+	ccSubcmd := CustomCCSubcmdBase + byte(bank)*CustomBankStride
 	ccMsg := []byte{
 		0xF0, 0x00, 0x32, 0x09, 0x49,
 		0x00, 0x00, 0x00, 0x02,
@@ -72,7 +136,7 @@ func BuildCCConfig(switchIndex int, ccValue byte, latching bool, channel byte) [
 	ccMsg[len(ccMsg)-3] = cs1
 	ccMsg[len(ccMsg)-2] = cs2
 
-	latchSubcmd := byte(0x03 + bank*2)
+	latchSubcmd := CustomLatchSubcmdBase + byte(bank)*CustomBankStride
 	latchVal := byte(0)
 	if latching {
 		latchVal = 1
@@ -119,15 +183,17 @@ func BuildInitSequence() [][]byte {
 		// 1-2: Session init / read requests (0D 41)
 		{0xF0, 0x00, 0x32, 0x0D, 0x41, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x10, 0x7E, 0x00, 0x00, 0x07, 0x00, 0xF7},
 		{0xF0, 0x00, 0x32, 0x0D, 0x41, 0x00, 0x00, 0x00, 0x02, 0x71, 0x07, 0x00, 0x00, 0x10, 0x6A, 0x00, 0x00, 0x33, 0x01, 0xF7},
-		// 3: Mode change to Custom CC
+		// 3: Mode change to Custom CC (overridden later by sendAllConfig)
 		BuildModeChange(ModeCustom),
-		// 4-8: Bank probes with CC readback (subcmd 02,04,06,08,0A)
+		// 4-8: Bank CC probes (CustomCCSubcmdBase + bank*CustomBankStride, value=probe)
+		// subcmds 0x02, 0x04, 0x06, 0x08, 0x0A with hardcoded probe values from cbix reference
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x02, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x20, 0x30, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x04, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x21, 0x2A, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x22, 0x24, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x03, 0x5E, 0x03, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x0A, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x2C, 0x08, 0x03, 0xF7},
-		// 9-12: Per-switch type init (subcmd 32,36,3A,3E with byte[10]=0E)
+		// 9-12: Per-switch type init (AdvCustomSubcmdBase+2, AdvCustomLiveWrite=0x0E, type values)
+		// subcmds 0x32, 0x36, 0x3A, 0x3E = AdvCustomSubcmdBase + switch*AdvCustomSwitchStride + AdvCustomAttrType
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x32, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x07, 0x74, 0x02, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x36, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x09, 0x68, 0x02, 0xF7},
 		{0xF0, 0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02, 0x3A, 0x0E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x0A, 0x5E, 0x02, 0xF7},
@@ -172,14 +238,15 @@ func SplitMessages(data []byte) [][]byte {
 // ConfigResponse holds parsed device configuration from a read response.
 type ConfigResponse struct {
 	Mode  byte
-	CC    [4]byte // bank 0-3 CC values
-	Latch [4]bool // bank 0-3 latching state
+	CC    [4]byte // bank 0-3 CC values — UNRELIABLE: 0D41 response does not reflect 09 49 CC writes
+	Latch [4]bool // bank 0-3 latching state — UNRELIABLE: same caveat
 }
 
-// ParseConfigResponse parses a 0D 49 response frame and extracts the device configuration.
-// The response format is: F0 00 32 0D 49 ... 10 7E 00 00 <config> <checksum> F7
-// Within <config>, the first byte is the mode, followed by subcmd+value pairs
-// for each bank setting (0x02/0x03 for bank 0, 0x04/0x05 for bank 1, etc.).
+// ParseConfigResponse parses a 0D 49 response frame.
+// The mode byte (after the 10 7E 00 00 marker) IS live and reflects BuildModeChange.
+// The CC and Latch fields are NOT reliable: the 0D 41 config dump is static and
+// does not update when CC/latch are written via 09 49 messages (either Custom CC
+// or Advanced Custom subcmds). Do not use CC/Latch to verify writes.
 func ParseConfigResponse(frame []byte) *ConfigResponse {
 	if len(frame) < 20 {
 		return nil
@@ -192,7 +259,6 @@ func ParseConfigResponse(frame []byte) *ConfigResponse {
 	cr := &ConfigResponse{}
 
 	// Find the config section after "10 7E 00 00" marker.
-	// Then search only that section for subcmd+value pairs.
 	configStart := -1
 	for i := 5; i < len(frame)-6; i++ {
 		if frame[i] == 0x10 && frame[i+1] == 0x7E && frame[i+2] == 0x00 && frame[i+3] == 0x00 {
@@ -200,39 +266,37 @@ func ParseConfigResponse(frame []byte) *ConfigResponse {
 			break
 		}
 	}
-
-	// Determine the search range: config section only.
-	searchEnd := len(frame) - 2 // exclude checksum + F7
 	if configStart <= 0 {
-		// No 10 7E 00 00 marker — not a config response frame.
 		return nil
 	}
+
+	searchEnd := len(frame) - 2 // exclude checksum + F7
 	searchStart := configStart
 
-	// Mode is the first byte of the config section.
-	if configStart > 0 && configStart < len(frame) {
+	// Mode byte is live — reflects last BuildModeChange sent.
+	if configStart < len(frame) {
 		cr.Mode = frame[configStart]
 	}
 
-	// Find CC and latch values. Search within config section only.
+	// CC and Latch: parsed for completeness but static in the device response.
 	for i := searchStart; i < searchEnd-1; i++ {
 		b := frame[i]
 		switch {
-		case b == 0x02 && frame[i+1] <= 127 && cr.CC[0] == 0:
+		case b == CustomCCSubcmdBase && frame[i+1] <= 127 && cr.CC[0] == 0:
 			cr.CC[0] = frame[i+1]
-		case b == 0x03:
+		case b == CustomLatchSubcmdBase:
 			cr.Latch[0] = frame[i+1] == 1
-		case b == 0x04 && frame[i+1] <= 127 && cr.CC[1] == 0:
+		case b == CustomCCSubcmdBase+CustomBankStride && frame[i+1] <= 127 && cr.CC[1] == 0:
 			cr.CC[1] = frame[i+1]
-		case b == 0x05:
+		case b == CustomLatchSubcmdBase+CustomBankStride:
 			cr.Latch[1] = frame[i+1] == 1
-		case b == 0x06 && frame[i+1] <= 127 && cr.CC[2] == 0:
+		case b == CustomCCSubcmdBase+2*CustomBankStride && frame[i+1] <= 127 && cr.CC[2] == 0:
 			cr.CC[2] = frame[i+1]
-		case b == 0x07:
+		case b == CustomLatchSubcmdBase+2*CustomBankStride:
 			cr.Latch[2] = frame[i+1] == 1
-		case b == 0x08 && frame[i+1] <= 127 && cr.CC[3] == 0:
+		case b == CustomCCSubcmdBase+3*CustomBankStride && frame[i+1] <= 127 && cr.CC[3] == 0:
 			cr.CC[3] = frame[i+1]
-		case b == 0x09:
+		case b == CustomLatchSubcmdBase+3*CustomBankStride:
 			cr.Latch[3] = frame[i+1] == 1
 		}
 	}

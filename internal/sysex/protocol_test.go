@@ -90,6 +90,63 @@ func TestCCConfigKnownMessages(t *testing.T) {
 	}
 }
 
+func TestBuildAdvCustomCC(t *testing.T) {
+	msgs := SplitMessages(BuildAdvCustomCC(0, 48, false, 0))
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	for i, msg := range msgs {
+		if msg[0] != 0xF0 || msg[len(msg)-1] != 0xF7 {
+			t.Errorf("msg[%d] not valid SysEx", i)
+		}
+		if msg[10] != AdvCustomLiveWrite {
+			t.Errorf("msg[%d] byte10=0x%02X, want AdvCustomLiveWrite=0x%02X", i, msg[10], AdvCustomLiveWrite)
+		}
+	}
+
+	// switch 0: subcmds = AdvCustomSubcmdBase + 0*AdvCustomSwitchStride + attr
+	wantCCSubcmd := AdvCustomSubcmdBase + 0*AdvCustomSwitchStride + AdvCustomAttrCC
+	if msgs[0][9] != wantCCSubcmd {
+		t.Errorf("CC subcmd=0x%02X, want 0x%02X", msgs[0][9], wantCCSubcmd)
+	}
+	if msgs[0][17] != 48 {
+		t.Errorf("CC value=%d, want 48", msgs[0][17])
+	}
+	wantTypeSubcmd := AdvCustomSubcmdBase + 0*AdvCustomSwitchStride + AdvCustomAttrType
+	if msgs[2][9] != wantTypeSubcmd {
+		t.Errorf("type subcmd=0x%02X, want 0x%02X", msgs[2][9], wantTypeSubcmd)
+	}
+	if msgs[2][17] != AdvCustomSwitchTypeCC {
+		t.Errorf("type value=0x%02X, want AdvCustomSwitchTypeCC=0x%02X", msgs[2][17], AdvCustomSwitchTypeCC)
+	}
+
+	// switch 3: base subcmd = AdvCustomSubcmdBase + 3*AdvCustomSwitchStride
+	sw3Base := AdvCustomSubcmdBase + 3*AdvCustomSwitchStride
+	msgs3 := SplitMessages(BuildAdvCustomCC(3, 64, true, 0))
+	if len(msgs3) != 3 {
+		t.Fatalf("switch3: expected 3 msgs, got %d", len(msgs3))
+	}
+	if msgs3[0][9] != sw3Base+AdvCustomAttrCC {
+		t.Errorf("switch3 CC subcmd=0x%02X, want 0x%02X", msgs3[0][9], sw3Base+AdvCustomAttrCC)
+	}
+	if msgs3[1][9] != sw3Base+AdvCustomAttrLatch {
+		t.Errorf("switch3 latch subcmd=0x%02X, want 0x%02X", msgs3[1][9], sw3Base+AdvCustomAttrLatch)
+	}
+	if msgs3[1][17] != 1 {
+		t.Errorf("switch3 latch value=%d, want 1 (latching)", msgs3[1][17])
+	}
+
+	// switch 15 (last): base subcmd = AdvCustomSubcmdBase + 15*AdvCustomSwitchStride = 0x30 + 60 = 0x6C
+	sw15Base := AdvCustomSubcmdBase + 15*AdvCustomSwitchStride
+	msgs15 := SplitMessages(BuildAdvCustomCC(15, 127, false, 0))
+	if len(msgs15) != 3 {
+		t.Fatalf("switch15: expected 3 msgs, got %d", len(msgs15))
+	}
+	if msgs15[0][9] != sw15Base+AdvCustomAttrCC {
+		t.Errorf("switch15 CC subcmd=0x%02X, want 0x%02X", msgs15[0][9], sw15Base+AdvCustomAttrCC)
+	}
+}
+
 func TestBuildDiscovery(t *testing.T) {
 	expected := "f0003245000000407ff7"
 	got := BuildDiscovery()

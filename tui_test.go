@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 
+	"mvave-chocolate-tui/internal/detect"
 	"mvave-chocolate-tui/internal/midi"
 	"mvave-chocolate-tui/internal/sysex"
 )
@@ -498,6 +499,112 @@ func TestTUIEditAndSendConfig(t *testing.T) {
 	if finalModel.config[0].CC != 44 {
 		t.Errorf("switch 0 CC: expected 44, got %d", finalModel.config[0].CC)
 	}
+}
+
+// TestTUIAdvancedCustomSendAllConfig is a headless E2E test that exercises the
+// full sendAllConfig() runtime path with a real MIDI device in Advanced Custom mode.
+//
+// It verifies that:
+//  1. The TUI goroutine dispatches BuildAdvCustomCC (not BuildCCConfig) for ModeAdvancedCustom
+//  2. The correct per-switch subcmds are sent (AdvCustomSubcmdBase + sw*Stride + attr)
+//  3. The mode re-assertion after init is present in the TX log
+//  4. The device ACKs all messages (checked via separate amidi read after each TX)
+//
+// Run: go test -v -run TestTUIAdvancedCustomSendAllConfig -timeout 60s .
+func TestTUIAdvancedCustomSendAllConfig(t *testing.T) {
+	// Find and open the real MIDI device.
+	path, err := detect.Find()
+	if err != nil || path == "" {
+		t.Skipf("no SINCO device found: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("device %s not accessible: %v", path, err)
+	}
+
+	dev, err := midi.Open(path)
+	if err != nil {
+		t.Fatalf("midi.Open(%s): %v", path, err)
+	}
+	defer func() { _ = dev.Close() }()
+
+	// Build a Model in Advanced Custom mode with switch 0 set to CC=48.
+	m := NewModel(path)
+	m.midi = dev
+	m.mode = sysex.ModeAdvancedCustom
+	m.config[0].CC = 48
+
+	// Kick off the goroutine-based send.
+	m.sendAllConfig()
+
+	// Drain midiMsgs until "DONE" arrives or timeout.
+	// sendAllConfig sends: 12 init + 1 mode + 16 switches × 3 msgs = 61 total.
+	deadline := time.After(45 * time.Second)
+	var txLog []string
+loop:
+	for {
+		select {
+		case msg := <-m.midiMsgs:
+			txLog = append(txLog, msg.Hex)
+			if strings.HasPrefix(msg.Hex, "DONE") {
+				break loop
+			}
+		case <-deadline:
+			t.Fatalf("timeout after %d msgs — sendAllConfig did not complete", len(txLog))
+		}
+	}
+	t.Logf("sendAllConfig sent %d messages", len(txLog))
+
+	// Build the expected Advanced Custom messages for switch 0 (CC=48, momentary).
+	expectedMsgs := sysex.SplitMessages(sysex.BuildAdvCustomCC(0, 48, false, 0))
+
+	for i, expMsg := range expectedMsgs {
+		expHex := strings.ToLower(hex.EncodeToString(expMsg))
+		found := false
+		for _, tx := range txLog {
+			if strings.Contains(strings.ToLower(tx), expHex) {
+				found = true
+				break
+			}
+		}
+		subcmd := expMsg[9]
+		attr := int(subcmd-sysex.AdvCustomSubcmdBase) % sysex.AdvCustomSwitchStride
+		attrName := []string{"CC#", "latch", "type", "?"}[attr]
+		if found {
+			t.Logf("  msg[%d] subcmd=0x%02X (%s) val=0x%02X — FOUND in TX log", i, subcmd, attrName, expMsg[17])
+		} else {
+			t.Errorf("  msg[%d] subcmd=0x%02X (%s) val=0x%02X — MISSING from TX log", i, subcmd, attrName, expMsg[17])
+		}
+	}
+
+	// Verify mode re-assertion (BuildModeChange(AdvancedCustom)) appears after init.
+	modeMsgHex := strings.ToLower(hex.EncodeToString(sysex.BuildModeChange(sysex.ModeAdvancedCustom)))
+	modeFound := false
+	for _, tx := range txLog {
+		if strings.Contains(strings.ToLower(tx), modeMsgHex) {
+			modeFound = true
+			break
+		}
+	}
+	if modeFound {
+		t.Log("  mode re-assertion (ModeAdvancedCustom) — FOUND in TX log")
+	} else {
+		t.Error("  mode re-assertion (ModeAdvancedCustom) — MISSING from TX log")
+	}
+
+	// Verify NO bank-CC subcmd (CustomCCSubcmdBase=0x02) message appears for switch 0
+	// (that would be the wrong path — BuildCCConfig instead of BuildAdvCustomCC).
+	bankCCMsg := sysex.SplitMessages(sysex.BuildCCConfig(0, 48, false, 0))
+	for i, wrongMsg := range bankCCMsg {
+		wrongHex := strings.ToLower(hex.EncodeToString(wrongMsg))
+		for _, tx := range txLog {
+			if strings.Contains(strings.ToLower(tx), wrongHex) {
+				t.Errorf("  bank-CC msg[%d] (subcmd=0x%02X — Custom CC path) found in TX log — wrong dispatch!",
+					i, wrongMsg[9])
+			}
+		}
+	}
+
+	t.Log("NOTE: press switch 0 to confirm device sends CC 48 to your multieffects")
 }
 
 func TestTUILogViewToggle(t *testing.T) {

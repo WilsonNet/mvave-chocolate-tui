@@ -707,6 +707,7 @@ func (m *Model) sendAllConfig() {
 	}
 
 	config := m.config
+	mode := m.mode
 	midiDev := m.midi
 	m.statusMsg = "Sending config to device..."
 
@@ -720,8 +721,23 @@ func (m *Model) sendAllConfig() {
 			time.Sleep(30 * time.Millisecond)
 		}
 
+		// Init sequence message 3 always forces ModeCustom; re-assert the user's mode.
+		modeCmd := sysex.BuildModeChange(mode)
+		if err := midiDev.SendSysex(modeCmd); err != nil {
+			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+			return
+		}
+		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(modeCmd)}
+		time.Sleep(30 * time.Millisecond)
+
 		for i, cfg := range config {
-			ccData := sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
+			var ccData []byte
+			if mode == sysex.ModeAdvancedCustom {
+				// Advanced Custom: per-switch subcmds (0x30+n*4, byte10=0x0E)
+				ccData = sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
+			} else {
+				ccData = sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
+			}
 			for _, cmd := range sysex.SplitMessages(ccData) {
 				if err := midiDev.SendSysex(cmd); err != nil {
 					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
