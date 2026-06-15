@@ -1027,3 +1027,254 @@ func TestHeadlessAmidiSendRaw(t *testing.T) {
 		t.Logf("%s: OK", name)
 	}
 }
+
+// TestHeadlessAdvCustomFlashWriteProbe probes whether AdvCustom writes with byte[10]=0x00
+// (BuildAdvCustomCCFlash) update the 0D41 config dump, establishing a flash persistence path.
+//
+// Two writes are compared:
+//   - RAM write (byte[10]=0x0E, CC=77): immediate effect, unknown persistence
+//   - Flash write (byte[10]=0x00, CC=99): unknown effect, potential persistence
+//
+// If "Flash write" changes the 0D41 dump, dual-path writes (0x0E + 0x00) would
+// give both immediate effect AND persistence after USB reconnect.
+//
+// Run: go test -v -run TestHeadlessAdvCustomFlashWriteProbe -timeout 60s ./internal/midi/
+func TestHeadlessAdvCustomFlashWriteProbe(t *testing.T) {
+	path := findDeviceOrSkip(t)
+	alsaDev := pathToAlsa(path)
+
+	stripHex := func(raw []byte) []byte {
+		clean := strings.Map(func(r rune) rune {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+				return r
+			}
+			return -1
+		}, string(raw))
+		data, _ := hex.DecodeString(clean)
+		return data
+	}
+
+	sendRecv := func(hexStr string, timeout time.Duration) []byte {
+		secs := int(timeout.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		cmd := exec.Command("amidi", "-p", alsaDev,
+			"-S", hexStr, "-d", "--timeout", strconv.Itoa(secs))
+		raw, _ := cmd.CombinedOutput()
+		return stripHex(raw)
+	}
+
+	drain := func() {
+		cmd := exec.Command("amidi", "-p", alsaDev, "-d", "--timeout", "1")
+		_, _ = cmd.CombinedOutput()
+	}
+
+	hasOK := func(data []byte) bool {
+		return len(sysex.FindSysExFrames(data, []byte{0xF0, 0x00, 0x32, 0x01, 0x08})) > 0
+	}
+
+	readDump := func() []byte {
+		drain()
+		return sendRecv(hex.EncodeToString(sysex.BuildReadSettings()), 3*time.Second)
+	}
+
+	diffBytes := func(before, after []byte, label string) int {
+		changes := 0
+		for i := 0; i < len(before) && i < len(after); i++ {
+			if before[i] != after[i] {
+				changes++
+				t.Logf("  %s: byte[%d] 0x%02X → 0x%02X", label, i, before[i], after[i])
+			}
+		}
+		return changes
+	}
+
+	// Ensure we're in Advanced Custom mode.
+	drain()
+	modeRaw := sendRecv(hex.EncodeToString(sysex.BuildModeChange(sysex.ModeAdvancedCustom)), 2*time.Second)
+	if !hasOK(modeRaw) {
+		t.Fatal("mode change to AdvancedCustom not ACKd")
+	}
+	t.Log("Mode: AdvancedCustom set")
+
+	// Baseline: 0D41 dump before any AdvCustom CC writes.
+	baseline := readDump()
+	t.Logf("Baseline dump: %d bytes", len(baseline))
+
+	// --- RAM write: byte[10]=0x0E, CC=77 ---
+	t.Log("\n=== RAM write (byte[10]=0x0E, CC=77) ===")
+	ramMsgs := sysex.SplitMessages(sysex.BuildAdvCustomCC(0, 77, false, 0))
+	ramACKs := 0
+	for _, msg := range ramMsgs {
+		raw := sendRecv(hex.EncodeToString(msg), 2*time.Second)
+		if hasOK(raw) {
+			ramACKs++
+			t.Logf("  subcmd=0x%02X byte10=0x%02X val=%d ACK=true", msg[9], msg[10], msg[17])
+		} else {
+			t.Logf("  subcmd=0x%02X byte10=0x%02X val=%d ACK=false", msg[9], msg[10], msg[17])
+		}
+	}
+	afterRAM := readDump()
+	ramChanges := diffBytes(baseline, afterRAM, "RAM")
+	t.Logf("RAM write (0x0E): %d/%d msgs ACKd, %d bytes changed in 0D41 dump",
+		ramACKs, len(ramMsgs), ramChanges)
+
+	// --- Flash write: byte[10]=0x00, CC=99 ---
+	t.Log("\n=== Flash write (byte[10]=0x00, CC=99) ===")
+	flashMsgs := sysex.SplitMessages(sysex.BuildAdvCustomCCFlash(0, 99, false, 0))
+	flashACKs := 0
+	for _, msg := range flashMsgs {
+		raw := sendRecv(hex.EncodeToString(msg), 2*time.Second)
+		if hasOK(raw) {
+			flashACKs++
+			t.Logf("  subcmd=0x%02X byte10=0x%02X val=%d ACK=true", msg[9], msg[10], msg[17])
+		} else {
+			t.Logf("  subcmd=0x%02X byte10=0x%02X val=%d ACK=false", msg[9], msg[10], msg[17])
+		}
+	}
+	afterFlash := readDump()
+	flashChanges := diffBytes(afterRAM, afterFlash, "Flash")
+	t.Logf("Flash write (0x00): %d/%d msgs ACKd, %d bytes changed in 0D41 dump",
+		flashACKs, len(flashMsgs), flashChanges)
+
+	// Scan afterFlash dump for AdvCustom CC subcmd 0x30 with value 99.
+	found99 := false
+	for i := 0; i < len(afterFlash)-1; i++ {
+		if afterFlash[i] == sysex.AdvCustomSubcmdBase && afterFlash[i+1] == 99 {
+			t.Logf("  FOUND: subcmd=0x30 value=99 at byte[%d] in 0D41 dump after flash write", i)
+			found99 = true
+		}
+	}
+
+	t.Log("\n=== RESULT ===")
+	if flashACKs > 0 && flashChanges > 0 {
+		t.Log("DUAL-PATH CONFIRMED: byte[10]=0x00 IS ACKd and DOES update 0D41 dump.")
+		t.Log("  → Update sendAllConfig to send both BuildAdvCustomCC (RAM) + BuildAdvCustomCCFlash (flash)")
+		t.Log("  → Update ParseConfigResponse to parse AdvCustom subcmds (0x30+) from dump")
+	} else if flashACKs > 0 && flashChanges == 0 {
+		t.Log("FLASH ACKd but NO dump change: byte[10]=0x00 accepted but doesn't update 0D41.")
+		t.Log("  → AdvCustom may need a different save-to-flash mechanism")
+	} else {
+		t.Log("FLASH NOT ACKd: byte[10]=0x00 rejected for AdvCustom subcmds.")
+		t.Log("  → Only byte[10]=0x0E works; config is RAM-only (lost on power cycle)")
+		t.Log("  → Use local config file for TUI state persistence")
+	}
+	if found99 {
+		t.Log("  + CC=99 subcmd found in dump → ParseConfigResponse can read AdvCustom CC values")
+	}
+}
+
+// TestHeadlessAdvCustomPersistenceRoundtrip tests the full user journey:
+// configure CC=48 in Advanced Custom mode → close fd → reopen → verify mode persists.
+//
+// Run: go test -v -run TestHeadlessAdvCustomPersistenceRoundtrip -timeout 90s ./internal/midi/
+func TestHeadlessAdvCustomPersistenceRoundtrip(t *testing.T) {
+	path := findDeviceOrSkip(t)
+	alsaDev := pathToAlsa(path)
+
+	stripHex := func(raw []byte) []byte {
+		clean := strings.Map(func(r rune) rune {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+				return r
+			}
+			return -1
+		}, string(raw))
+		data, _ := hex.DecodeString(clean)
+		return data
+	}
+
+	sendRecv := func(hexStr string, timeout time.Duration) []byte {
+		secs := int(timeout.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		cmd := exec.Command("amidi", "-p", alsaDev,
+			"-S", hexStr, "-d", "--timeout", strconv.Itoa(secs))
+		raw, _ := cmd.CombinedOutput()
+		return stripHex(raw)
+	}
+
+	drain := func() {
+		cmd := exec.Command("amidi", "-p", alsaDev, "-d", "--timeout", "1")
+		_, _ = cmd.CombinedOutput()
+	}
+
+	hasOK := func(data []byte) bool {
+		return len(sysex.FindSysExFrames(data, []byte{0xF0, 0x00, 0x32, 0x01, 0x08})) > 0
+	}
+
+	readMode := func(label string) (mode byte, isAdvCustom bool, rawDump []byte) {
+		drain()
+		raw := sendRecv(hex.EncodeToString(sysex.BuildReadSettings()), 3*time.Second)
+		frames := sysex.FindSysExFrames(raw, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
+		for _, f := range frames {
+			if cr := sysex.ParseConfigResponse(f); cr != nil {
+				name := sysex.ModeNames[cr.Mode]
+				t.Logf("%s: mode=0x%02X (%s)", label, cr.Mode, name)
+				return cr.Mode, cr.Mode == sysex.ModeAdvancedCustom, raw
+			}
+		}
+		t.Logf("%s: no config frame in response (%d bytes)", label, len(raw))
+		return 0, false, raw
+	}
+
+	// === SESSION 1: set AdvCustom + CC=48 for switch 0 ===
+	t.Log("=== Session 1: configure CC=48 in Advanced Custom mode ===")
+	drain()
+
+	modeRaw := sendRecv(hex.EncodeToString(sysex.BuildModeChange(sysex.ModeAdvancedCustom)), 2*time.Second)
+	if !hasOK(modeRaw) {
+		t.Fatal("mode change not ACKd")
+	}
+
+	ackCount := 0
+	for _, msg := range sysex.SplitMessages(sysex.BuildAdvCustomCC(0, 48, false, 0)) {
+		raw := sendRecv(hex.EncodeToString(msg), 2*time.Second)
+		if hasOK(raw) {
+			ackCount++
+		}
+	}
+	t.Logf("CC=48 for switch 0: %d/3 ACKd", ackCount)
+	if ackCount != 3 {
+		t.Fatalf("expected 3 ACKs, got %d — device not responding correctly", ackCount)
+	}
+
+	_, ok1, _ := readMode("Session 1 readback")
+	if !ok1 {
+		t.Error("Session 1: mode not AdvancedCustom after write")
+	}
+
+	// === "CLOSE" — simulate TUI close (amidi subprocesses already closed) ===
+	t.Log("\n=== Simulating TUI close (500ms pause) ===")
+	time.Sleep(500 * time.Millisecond)
+
+	// === SESSION 2: fresh read, no re-send ===
+	t.Log("=== Session 2: read without re-sending config ===")
+	mode2, ok2, rawDump2 := readMode("Session 2 readback")
+
+	// Scan raw 0D41 dump for AdvCustom subcmd 0x30 + value 48.
+	found48 := false
+	for i := 0; i < len(rawDump2)-1; i++ {
+		if rawDump2[i] == sysex.AdvCustomSubcmdBase && rawDump2[i+1] == 48 {
+			t.Logf("  FOUND: subcmd=0x30 value=48 at raw byte[%d] — CC=48 in dump!", i)
+			found48 = true
+		}
+	}
+
+	t.Log("\n=== RESULT ===")
+	if ok2 {
+		t.Log("PASS: mode=AdvancedCustom persists after simulated close")
+	} else {
+		t.Logf("INFO: mode after close=0x%02X (not AdvancedCustom) — mode may be RAM-only too", mode2)
+	}
+
+	if found48 {
+		t.Log("PASS: CC=48 found in 0D41 dump → device persists AdvCustom CC in dump/flash")
+	} else {
+		t.Log("INFO: CC=48 not found in 0D41 dump")
+		t.Log("  → Run TestHeadlessAdvCustomFlashWriteProbe to probe byte[10]=0x00 path")
+		t.Log("  → Physical test: press switch 0, if CC=48 arrives: device uses RAM that persists over close")
+		t.Log("  → If CC=48 NOT sent after USB reconnect: re-send config on every TUI connect")
+	}
+}

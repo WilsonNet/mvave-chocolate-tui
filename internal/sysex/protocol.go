@@ -118,6 +118,44 @@ func BuildAdvCustomCC(switchIndex int, ccValue byte, latching bool, channel byte
 	return result
 }
 
+// BuildAdvCustomCCFlash builds the same 3 messages as BuildAdvCustomCC but with
+// byte[10]=0x00 instead of AdvCustomLiveWrite (0x0E).
+//
+// Purpose: probe whether these writes reach the 0D41 config dump (flash) rather than
+// device RAM. If the 0D41 readback changes after these writes, the device supports
+// dual-path persistence for AdvCustom mode (RAM via 0x0E, flash via 0x00).
+// Unverified — use TestHeadlessAdvCustomFlashWriteProbe to determine behaviour.
+func BuildAdvCustomCCFlash(switchIndex int, ccValue byte, latching bool, channel byte) []byte {
+	base := AdvCustomSubcmdBase + byte(switchIndex)*AdvCustomSwitchStride
+
+	latchVal := byte(0)
+	if latching {
+		latchVal = 1
+	}
+
+	buildOne := func(subcmd, val byte) []byte {
+		msg := []byte{
+			0xF0, 0x00, 0x32, 0x09, 0x49,
+			0x00, 0x00, 0x00, 0x02,
+			subcmd, 0x00, 0x00, 0x00, // byte[10]=0x00: targets config dump, not RAM
+			0x10,
+			0x00, 0x00, 0x00,
+			val,
+			0x00, 0x00,
+			0xF7,
+		}
+		cs1, cs2 := Checksum(msg[1 : len(msg)-3])
+		msg[len(msg)-3] = cs1
+		msg[len(msg)-2] = cs2
+		return msg
+	}
+
+	result := buildOne(base+AdvCustomAttrCC, ccValue)
+	result = append(result, buildOne(base+AdvCustomAttrLatch, latchVal)...)
+	result = append(result, buildOne(base+AdvCustomAttrType, AdvCustomSwitchTypeCC)...)
+	return result
+}
+
 func BuildCCConfig(switchIndex int, ccValue byte, latching bool, channel byte) []byte {
 	bank := switchIndex / 4
 

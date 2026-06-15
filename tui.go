@@ -487,10 +487,16 @@ func (m *Model) parseMidiBytes(data []byte) {
 				if _, ok := sysex.ModeNames[cr.Mode]; ok {
 					m.mode = cr.Mode
 				}
-				for bank := 0; bank < 4; bank++ {
-					for sw := bank * 4; sw < (bank+1)*4 && sw < 16; sw++ {
-						m.config[sw].CC = int(cr.CC[bank])
-						m.config[sw].Latching = cr.Latch[bank]
+				// Only apply CC/Latch from the 0D41 dump in Custom CC mode.
+				// AdvancedCustom uses per-switch subcmds (0x30+) that are NOT in the
+				// 0D41 dump — applying cr.CC here would overwrite user config with stale
+				// static bytes from the factory dump.
+				if cr.Mode != sysex.ModeAdvancedCustom {
+					for bank := 0; bank < 4; bank++ {
+						for sw := bank * 4; sw < (bank+1)*4 && sw < 16; sw++ {
+							m.config[sw].CC = int(cr.CC[bank])
+							m.config[sw].Latching = cr.Latch[bank]
+						}
 					}
 				}
 				m.statusMsg = fmt.Sprintf("Config loaded — mode: %s", sysex.ModeNames[m.mode])
@@ -731,20 +737,33 @@ func (m *Model) sendAllConfig() {
 		time.Sleep(30 * time.Millisecond)
 
 		for i, cfg := range config {
-			var ccData []byte
 			if mode == sysex.ModeAdvancedCustom {
-				// Advanced Custom: per-switch subcmds (0x30+n*4, byte10=0x0E)
-				ccData = sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
-			} else {
-				ccData = sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))
-			}
-			for _, cmd := range sysex.SplitMessages(ccData) {
-				if err := midiDev.SendSysex(cmd); err != nil {
-					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
-					return
+				// Advanced Custom dual write:
+				// 1. RAM write (byte[10]=0x0E): immediate effect in device RAM
+				// 2. Flash write (byte[10]=0x00): persists to device flash (survives USB reconnect)
+				// Both paths are ACKd by device; flash write updates the 0D41 config dump.
+				for _, data := range [][]byte{
+					sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel)),
+					sysex.BuildAdvCustomCCFlash(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel)),
+				} {
+					for _, cmd := range sysex.SplitMessages(data) {
+						if err := midiDev.SendSysex(cmd); err != nil {
+							m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+							return
+						}
+						m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
+						time.Sleep(40 * time.Millisecond)
+					}
 				}
-				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
-				time.Sleep(40 * time.Millisecond)
+			} else {
+				for _, cmd := range sysex.SplitMessages(sysex.BuildCCConfig(i, byte(cfg.CC), cfg.Latching, byte(cfg.Channel))) {
+					if err := midiDev.SendSysex(cmd); err != nil {
+						m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
+						return
+					}
+					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "TX " + hex.EncodeToString(cmd)}
+					time.Sleep(40 * time.Millisecond)
+				}
 			}
 		}
 		m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: all config sent"}

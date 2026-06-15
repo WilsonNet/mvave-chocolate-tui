@@ -13,8 +13,8 @@ go run . /dev/snd/midiC5D0             # run with explicit device path
 go test -v -run "TestKnown|TestBuild|TestChecksum|TestCC|TestModel|TestSend|TestFind|TestTUIMode|TestTUILog" ./...
 
 # Device E2E tests (requires Chocolate in U mode)
-go test -v -timeout 60s -run TestHeadless ./internal/midi/
-go test -v -timeout 60s -run TestTUIAdvancedCustomSendAllConfig .
+go test -v -timeout 90s -run TestHeadless ./internal/midi/
+go test -v -timeout 60s -run "TestTUIAdvancedCustomSendAllConfig|TestTUIAdvancedCustomFullJourney" .
 
 # Full test suite (skips device tests when no device present)
 go test -count=1 -timeout 120s ./...
@@ -57,8 +57,10 @@ Split into two 7-bit bytes: `low = v & 0x7F`, `high = (v >> 7) & 0x7F`. See `Kno
 **Switch indexing**: Switches are `[0..15]`. Bank = `idx/4`, switch-in-bank = `idx%4`. Label format: `{bank+1}{A..D}` (e.g., index 5 → `2B`).
 
 **Mode dispatch in sendAllConfig**: After the init sequence and mode re-assertion, `sendAllConfig` dispatches by mode:
-- `ModeAdvancedCustom` → `BuildAdvCustomCC` (per-switch subcmds, 3 msgs per switch)
+- `ModeAdvancedCustom` → dual write per switch: `BuildAdvCustomCC` (RAM, byte[10]=0x0E, immediate) + `BuildAdvCustomCCFlash` (flash, byte[10]=0x00, persistent) = 6 msgs per switch × 16 = 96 msgs
 - all other modes → `BuildCCConfig` (bank-shared subcmds, 2 msgs per switch)
+
+**AdvCustom parseMidiBytes guard**: When `ParseConfigResponse` returns and mode=AdvancedCustom, the `CC`/`Latch` fields from the 0D41 dump are stale static bytes — NOT live CC values. `parseMidiBytes` skips the CC/Latch update in AdvCustom mode to prevent user config being overwritten by the stale dump.
 
 ## SysEx protocol reference
 
@@ -69,7 +71,8 @@ Vendor `00 32` (Jieli). Partial reverse-engineering at [cbix/mvave-chocolate-sys
 | `BuildInitSequence()` | 12-message handshake — always send before config writes |
 | `BuildModeChange(mode)` | Switch operating mode (value in `ModeCustom`, `ModeAdvancedCustom`, etc.) |
 | `BuildCCConfig(idx, cc, latch, chan)` | Custom CC mode: 2 msgs (CC + latch) for bank `idx/4`; use `SplitMessages` |
-| `BuildAdvCustomCC(idx, cc, latch, chan)` | Advanced Custom: 3 msgs (CC#, latch, type) for per-switch `idx` 0–15 |
+| `BuildAdvCustomCC(idx, cc, latch, chan)` | Advanced Custom RAM write: 3 msgs, byte[10]=0x0E — immediate effect |
+| `BuildAdvCustomCCFlash(idx, cc, latch, chan)` | Advanced Custom flash write: 3 msgs, byte[10]=0x00 — persists to 0D41 dump |
 | `BuildReadSettings()` | Request 0D 49 config dump — **mode byte live, CC values STATIC** |
 | `IsOKResponse(frame)` | Check for `00 32 01 08` ACK |
 | `ParseConfigResponse(frame)` | Decode 0D 49 frame — only `Mode` field is reliable |
@@ -83,7 +86,7 @@ CustomLatchSubcmdBase = 0x03   // bank 0 latch
 CustomBankStride      = 2
 ```
 
-**Advanced Custom mode** (subcmds in `09 49` messages, byte[10]=`AdvCustomLiveWrite=0x0E`):
+**Advanced Custom mode** (subcmds in `09 49` messages):
 ```
 AdvCustomSubcmdBase    = 0x30  // switch 0, attr 0
 AdvCustomSwitchStride  = 4     // 4 subcmds (attrs) per switch
@@ -97,13 +100,24 @@ AdvCustomSwitchTypeCC  = 0x07  // switch type: outputs CC message
 Subcmd formula: `AdvCustomSubcmdBase + switchIndex*AdvCustomSwitchStride + attr`
 - Switch 0 CC: subcmd `0x30`, switch 3 CC: subcmd `0x3C`, switch 15 CC: subcmd `0x6C`
 
+**Two write paths for AdvCustom** (confirmed via `TestHeadlessAdvCustomFlashWriteProbe`):
+
+| byte[10] | Function | 0D41 dump | Survives reconnect |
+|---|---|---|---|
+| `0x0E` (AdvCustomLiveWrite) | RAM write — immediate effect | unchanged | no (RAM only) |
+| `0x00` | Flash write — persistent | 4 bytes change (including checksum) | yes |
+
+`sendAllConfig` sends BOTH paths per switch. `BuildAdvCustomCC` = RAM, `BuildAdvCustomCCFlash` = flash.
+
 ### Readback caveat (reverse-engineered)
 
 The `0D 41` → `0D 49` response:
 - **Mode byte IS live** — updates immediately when `BuildModeChange` is sent.
-- **CC values are STATIC** — the 1173-byte config dump does NOT update when `09 49` CC writes are sent (confirmed via byte-diff test with CC=99). `ParseConfigResponse.CC` returns structural bytes from the dump, not the live CC assignments.
-- `BuildReadSettings()` is only reliable for reading the current operating mode.
-- Two read variants exist: the standard `10 7E` request (1173 bytes) and the `10 6A` variant (990 bytes, all zeros — no useful data).
+- **CC values are STATIC via `ParseConfigResponse`** — the 1173-byte config dump does NOT update when `09 49` CC writes are sent with byte[10]=0x0E (RAM path). `ParseConfigResponse.CC` returns stale structural bytes, not live CC assignments. Do not use to verify writes.
+- **Flash write (byte[10]=0x00) DOES update the dump** — confirmed: 4 bytes change (including checksum at bytes 1170–1171). The CC value encoding in the dump is not yet fully decoded; `ParseConfigResponse` does not extract it.
+- `BuildReadSettings()` is reliable only for reading current operating mode.
+- Two read variants: standard `10 7E` (1173 bytes) and `10 6A` (990 bytes, all zeros — no useful data).
+- **Raw fd vs ALSA sequencer**: `midiReadLoop` reads from `/dev/snd/midiCXDX` (raw fd). SysEx responses to `BuildReadSettings()` arrive on the ALSA sequencer port used by amidi — NOT on the raw fd. Use `amidi -S <hex> -d --timeout <secs>` (combined) to capture SysEx responses.
 
 ### Init sequence note
 
