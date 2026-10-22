@@ -108,3 +108,33 @@ For OK responses (header `00 32 01 08`): `checksum = 0x13A - sum(all bytes)`.
 For discovery (header `00 32 45`): `checksum = 0x136 - sum(all bytes)`.
 
 Verification: 18 known-good test vectors in `sysex_test.go`, all passing.
+
+## Read response — config dump layout (reverse-engineered)
+
+The `0D 41` read request is answered with a `0D 49` dump frame (~1173 bytes).
+After the `10 7E 00 00` marker the device stores the whole configuration as a
+**packed bitstream**:
+
+- Each frame byte carries **7 payload bits** (MIDI-safe bytes, LSB first).
+- Each subcommand `s` owns an **8-bit little-endian field at bit offset `8*s`**
+  from the config start.
+- Field `0x00` is the operating mode.
+
+| Field (subcmd) | Meaning |
+|---|---|
+| `0x00` | Operating mode (`0x07` Custom CC, `0x09` Advanced Custom, ...) |
+| `0x02` / `0x03` | Bank 0 CC / latching (Custom CC mode) |
+| `0x04` / `0x05` | Bank 1 CC / latching |
+| `0x06` / `0x07` | Bank 2 CC / latching |
+| `0x08` / `0x09` | Bank 3 CC / latching |
+| `0x30+4*i` | Switch `i` CC (Advanced Custom mode) |
+| `0x31+4*i` | Switch `i` latching |
+| `0x32+4*i` | Switch `i` switch type |
+
+To read a value: the same subcommand used to write it via a `09 49` message is
+its field index in the dump. Verified with bit-level write probes (distinctive
+values `0x11`/`0x22` per subcommand, diffing the full dump before/after).
+
+**Write paths matter:** `byte[10]=0x00` messages update the dump (persist across
+power cycles); `byte[10]=0x0E` messages only change device RAM (live effect,
+invisible to readback). Use `BuildAdvCustomCCFull` to write both paths.

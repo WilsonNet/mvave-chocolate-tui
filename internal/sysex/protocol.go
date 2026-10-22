@@ -273,18 +273,61 @@ func SplitMessages(data []byte) [][]byte {
 	return msgs
 }
 
-// ConfigResponse holds parsed device configuration from a read response.
-type ConfigResponse struct {
-	Mode  byte
-	CC    [4]byte // bank 0-3 CC values — UNRELIABLE: 0D41 response does not reflect 09 49 CC writes
-	Latch [4]bool // bank 0-3 latching state — UNRELIABLE: same caveat
+// BuildAdvCustomCCFull builds the dual-path write for one switch in Advanced
+// Custom mode: RAM messages (byte[10]=0x0E, take effect immediately in the
+// device) followed by flash messages (byte[10]=0x00, stored in the 0D41 config
+// dump so they survive power cycles and show up in readback).
+//
+// Verified by probe against a real device: RAM-only writes are ACK'd but leave
+// no trace in the config dump; flash writes are ACK'd AND update the dump.
+// Sending both keeps the change live and persistent.
+func BuildAdvCustomCCFull(switchIndex int, ccValue byte, latching bool, channel byte) []byte {
+	result := BuildAdvCustomCC(switchIndex, ccValue, latching, channel)
+	return append(result, BuildAdvCustomCCFlash(switchIndex, ccValue, latching, channel)...)
 }
 
-// ParseConfigResponse parses a 0D 49 response frame.
-// The mode byte (after the 10 7E 00 00 marker) IS live and reflects BuildModeChange.
-// The CC and Latch fields are NOT reliable: the 0D 41 config dump is static and
-// does not update when CC/latch are written via 09 49 messages (either Custom CC
-// or Advanced Custom subcmds). Do not use CC/Latch to verify writes.
+// ConfigResponse holds parsed device configuration from a 0D 49 read response.
+type ConfigResponse struct {
+	Mode        byte
+	CC          [4]byte  // Custom CC mode: bank 0-3 CC values (subcmds 0x02/0x04/0x06/0x08)
+	Latch       [4]bool  // Custom CC mode: bank 0-3 latching state (subcmds 0x03/0x05/0x07/0x09)
+	SwitchCC    [16]byte // Advanced Custom mode: per-switch CC values (subcmd 0x30+4*i)
+	SwitchLatch [16]bool // Advanced Custom mode: per-switch latching (subcmd 0x31+4*i)
+	SwitchType  [16]byte // Advanced Custom mode: per-switch type (subcmd 0x32+4*i)
+}
+
+// configField extracts the 8-bit config value that belongs to the given
+// subcommand from a 0D 49 config dump frame.
+//
+// Reverse-engineered layout (verified with bit-level write probes against a
+// real device): after the "10 7E 00 00" marker the device stores the whole
+// configuration as a packed bitstream — 7 payload bits per frame byte
+// (MIDI-safe bytes, LSB first) — where each subcommand s owns an 8-bit
+// little-endian field at bit offset 8*s. Field 0x00 is the operating mode.
+// The same subcommand used to WRITE a value via a 09 49 message is the field
+// that holds it in the dump (byte[10]=0x00 writes only: RAM writes 0x0E are
+// invisible in the dump).
+func configField(frame []byte, configStart, subcmd int) (byte, bool) {
+	bitOff := 8 * subcmd
+	var val byte
+	for b := 0; b < 8; b++ {
+		abs := bitOff + b
+		byteIdx := configStart + abs/7
+		bitIdx := abs % 7
+		if byteIdx < 0 || byteIdx >= len(frame) {
+			return 0, false
+		}
+		if frame[byteIdx]&(1<<bitIdx) != 0 {
+			val |= 1 << b
+		}
+	}
+	return val, true
+}
+
+// ParseConfigResponse parses a 0D 49 config dump frame. Mode, CC, Latch and
+// the per-switch Advanced Custom fields are decoded from the packed
+// 7-bit-per-byte bitstream (see configField), so readback reflects writes made
+// with 09 49 messages (byte[10]=0x00 path).
 func ParseConfigResponse(frame []byte) *ConfigResponse {
 	if len(frame) < 20 {
 		return nil
@@ -293,8 +336,6 @@ func ParseConfigResponse(frame []byte) *ConfigResponse {
 		frame[3] != 0x0D || frame[4] != 0x49 {
 		return nil
 	}
-
-	cr := &ConfigResponse{}
 
 	// Find the config section after "10 7E 00 00" marker.
 	configStart := -1
@@ -308,34 +349,35 @@ func ParseConfigResponse(frame []byte) *ConfigResponse {
 		return nil
 	}
 
-	searchEnd := len(frame) - 2 // exclude checksum + F7
-	searchStart := configStart
+	cr := &ConfigResponse{}
 
-	// Mode byte is live — reflects last BuildModeChange sent.
-	if configStart < len(frame) {
-		cr.Mode = frame[configStart]
+	mode, ok := configField(frame, configStart, 0x00)
+	if !ok {
+		return nil
+	}
+	cr.Mode = mode
+
+	// Custom CC mode: bank-shared CC/latch subcmds (2 per bank).
+	for bank := 0; bank < 4; bank++ {
+		if v, ok := configField(frame, configStart, int(CustomCCSubcmdBase)+bank*int(CustomBankStride)); ok {
+			cr.CC[bank] = v
+		}
+		if v, ok := configField(frame, configStart, int(CustomLatchSubcmdBase)+bank*int(CustomBankStride)); ok {
+			cr.Latch[bank] = v != 0
+		}
 	}
 
-	// CC and Latch: parsed for completeness but static in the device response.
-	for i := searchStart; i < searchEnd-1; i++ {
-		b := frame[i]
-		switch {
-		case b == CustomCCSubcmdBase && frame[i+1] <= 127 && cr.CC[0] == 0:
-			cr.CC[0] = frame[i+1]
-		case b == CustomLatchSubcmdBase:
-			cr.Latch[0] = frame[i+1] == 1
-		case b == CustomCCSubcmdBase+CustomBankStride && frame[i+1] <= 127 && cr.CC[1] == 0:
-			cr.CC[1] = frame[i+1]
-		case b == CustomLatchSubcmdBase+CustomBankStride:
-			cr.Latch[1] = frame[i+1] == 1
-		case b == CustomCCSubcmdBase+2*CustomBankStride && frame[i+1] <= 127 && cr.CC[2] == 0:
-			cr.CC[2] = frame[i+1]
-		case b == CustomLatchSubcmdBase+2*CustomBankStride:
-			cr.Latch[2] = frame[i+1] == 1
-		case b == CustomCCSubcmdBase+3*CustomBankStride && frame[i+1] <= 127 && cr.CC[3] == 0:
-			cr.CC[3] = frame[i+1]
-		case b == CustomLatchSubcmdBase+3*CustomBankStride:
-			cr.Latch[3] = frame[i+1] == 1
+	// Advanced Custom mode: per-switch subcmds (AdvCustomSwitchStride per switch).
+	for sw := 0; sw < 16; sw++ {
+		base := int(AdvCustomSubcmdBase) + sw*int(AdvCustomSwitchStride)
+		if v, ok := configField(frame, configStart, base+AdvCustomAttrCC); ok {
+			cr.SwitchCC[sw] = v
+		}
+		if v, ok := configField(frame, configStart, base+AdvCustomAttrLatch); ok {
+			cr.SwitchLatch[sw] = v != 0
+		}
+		if v, ok := configField(frame, configStart, base+AdvCustomAttrType); ok {
+			cr.SwitchType[sw] = v
 		}
 	}
 

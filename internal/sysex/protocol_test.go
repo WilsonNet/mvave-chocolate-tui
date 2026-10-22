@@ -177,3 +177,77 @@ func TestChecksumProperty(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestParseConfigResponsePacked verifies the packed 7-bit-per-byte config
+// dump decoding: subcommand s owns an 8-bit field at bit offset 8*s from the
+// config start (right after the "10 7E 00 00" marker).
+func TestParseConfigResponsePacked(t *testing.T) {
+	configStart := 17
+	frame := make([]byte, 160)
+	frame[0], frame[1], frame[2], frame[3], frame[4] = 0xF0, 0x00, 0x32, 0x0D, 0x49
+	frame[13], frame[14], frame[15], frame[16] = 0x10, 0x7E, 0x00, 0x00
+
+	setField := func(subcmd int, val byte) {
+		for b := 0; b < 8; b++ {
+			if val&(1<<b) != 0 {
+				abs := 8*subcmd + b
+				frame[configStart+abs/7] |= 1 << (abs % 7)
+			}
+		}
+	}
+
+	setField(0x00, 0x09) // mode: Advanced Custom
+	setField(0x02, 48)   // bank 0 CC
+	setField(0x03, 1)    // bank 0 latching
+	setField(0x04, 49)   // bank 1 CC
+	setField(0x30, 99)   // switch 0 CC
+	setField(0x31, 1)    // switch 0 latching
+	setField(0x32, 7)    // switch 0 type
+	setField(0x34, 19)   // switch 1 CC
+
+	cr := ParseConfigResponse(frame)
+	if cr == nil {
+		t.Fatal("ParseConfigResponse returned nil for synthetic frame")
+	}
+	if cr.Mode != 0x09 {
+		t.Errorf("Mode = 0x%02X, want 0x09", cr.Mode)
+	}
+	if cr.CC != [4]byte{48, 49, 0, 0} {
+		t.Errorf("CC = %v, want [48 49 0 0]", cr.CC)
+	}
+	if cr.Latch != [4]bool{true, false, false, false} {
+		t.Errorf("Latch = %v, want [true false false false]", cr.Latch)
+	}
+	if cr.SwitchCC[0] != 99 || cr.SwitchCC[1] != 19 {
+		t.Errorf("SwitchCC[0:2] = [%d %d], want [99 19]", cr.SwitchCC[0], cr.SwitchCC[1])
+	}
+	if !cr.SwitchLatch[0] || cr.SwitchType[0] != 7 {
+		t.Errorf("SwitchLatch[0] = %v (want true), SwitchType[0] = %d (want 7)",
+			cr.SwitchLatch[0], cr.SwitchType[0])
+	}
+}
+
+// TestParseConfigResponseRealFrame is a regression test using the first bytes
+// of a real 0D 49 dump captured from a device in Custom CC mode with bank 0
+// CC=48 (bytes 19-20 are 0x40 0x01 in the raw frame).
+func TestParseConfigResponseRealFrame(t *testing.T) {
+	prefix := []byte{
+		0xF0, 0x00, 0x32, 0x0D, 0x49, 0x3F, 0x00, 0x00, 0x02, 0x00,
+		0x00, 0x00, 0x00, 0x10, 0x7E, 0x00, 0x00, 0x07, 0x00, 0x40,
+		0x01, 0x10, 0x24, 0x00, 0x11, 0x00, 0x06, 0x00, 0x60, 0x02,
+		0x00, 0x00, 0x00, 0x01,
+	}
+	frame := make([]byte, 160)
+	copy(frame, prefix)
+
+	cr := ParseConfigResponse(frame)
+	if cr == nil {
+		t.Fatal("ParseConfigResponse returned nil for real frame prefix")
+	}
+	if cr.Mode != 0x07 {
+		t.Errorf("Mode = 0x%02X, want 0x07 (Custom CC)", cr.Mode)
+	}
+	if cr.CC[0] != 48 {
+		t.Errorf("bank 0 CC = %d, want 48", cr.CC[0])
+	}
+}
