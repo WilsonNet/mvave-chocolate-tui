@@ -326,9 +326,9 @@ func autoConfigureCmd(dev *midi.Device, config [16]SwitchConfig) tea.Cmd {
 		}
 		time.Sleep(50 * time.Millisecond)
 
-		// 2. Write CC config for all 16 switches (RAM write only — byte[10]=0x0E).
+		// 2. Write CC config for all 16 switches (dual path: RAM + flash).
 		for i, cfg := range config {
-			for _, msg := range sysex.SplitMessages(sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, 0)) {
+			for _, msg := range sysex.SplitMessages(sysex.BuildAdvCustomCCFull(i, byte(cfg.CC), cfg.Latching, 0)) {
 				if err := dev.SendSysex(msg); err != nil {
 					return deviceReadyMsg{err: err.Error()}
 				}
@@ -631,7 +631,7 @@ func (m *Model) applyEdit() {
 
 // sendAllConfig writes the full Advanced Custom config to the device:
 // 1. Set mode to Advanced Custom.
-// 2. For each switch: BuildAdvCustomCC (RAM write, byte[10]=0x0E).
+// 2. For each switch: dual-path write — RAM (byte[10]=0x0E, live) + flash (byte[10]=0x00, persisted).
 // No init sequence — TestHeadlessAdvCustomCC48 confirmed it's not needed.
 // No flash write — flash encoding is not linear (CC=99 stores as 0x40/0x31, not 99).
 func (m *Model) sendAllConfig() {
@@ -653,7 +653,7 @@ func (m *Model) sendAllConfig() {
 		time.Sleep(50 * time.Millisecond)
 
 		for i, cfg := range config {
-			for _, cmd := range sysex.SplitMessages(sysex.BuildAdvCustomCC(i, byte(cfg.CC), cfg.Latching, 0)) {
+			for _, cmd := range sysex.SplitMessages(sysex.BuildAdvCustomCCFull(i, byte(cfg.CC), cfg.Latching, 0)) {
 				if err := midiDev.SendSysex(cmd); err != nil {
 					m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: " + err.Error()}
 					return
