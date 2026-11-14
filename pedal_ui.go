@@ -240,6 +240,10 @@ func (m *Model) handlePedalKey(msg tea.KeyMsg) tea.Cmd {
 			if len(p.typed) > 0 {
 				p.typed = p.typed[:len(p.typed)-1]
 			}
+		case "n":
+			m.addMessage(f)
+		case "x":
+			m.removeMessage(f)
 		default:
 			if len(k) == 1 && k[0] >= '0' && k[0] <= '9' && len(f.Choices) == 0 && len(p.typed) < 3 {
 				p.typed += k
@@ -383,13 +387,12 @@ func (m *Model) verifyWrite() {
 
 // --- presses ---------------------------------------------------------------
 
-func (m *Model) notePress(channel, number, value byte) {
+func (m *Model) notePress(msg Message) {
 	if m.cfg == nil {
 		return
 	}
 	stamp := time.Now().Format("15:04:05")
-	msg := Message{Channel: channel, Number: number, Value: value}
-	if s, slot, ok := m.device.Match(*m.cfg, channel, number, value); ok {
+	if s, slot, ok := m.device.Match(*m.cfg, msg); ok {
 		m.pui.flashAt[s] = time.Now()
 		m.pui.flashSlot[s] = slot
 		name := m.device.SlotNames(m.cfg.Switches[s])[slot]
@@ -480,10 +483,7 @@ func (m *Model) drawPedal(cfg Config) string {
 		}
 		first := "—"
 		if len(sw.Slots) > 0 && len(sw.Slots[0]) > 0 {
-			first = sw.Slots[0][0].String()
-			if sw.Slots[0][0].Stored() {
-				first = fmt.Sprintf("CC%d=%d", sw.Slots[0][0].Number, sw.Slots[0][0].Value)
-			}
+			first = sw.Slots[0][0].Short()
 		}
 		sub := pMuted.Render(first)
 		if lit {
@@ -517,24 +517,39 @@ func (m *Model) drawDetail(cfg Config) string {
 	}
 	lines := []string{pTitle.Render(title)}
 
+	width := 0 // the label column fits the widest row name
+	for _, f := range fields {
+		if n := len([]rune(f.Row)); n > width {
+			width = n
+		}
+	}
 	var row string
 	var cells []string
+	newRow := false
 	flush := func() {
 		if row != "" {
-			lines = append(lines, pMuted.Render(fmt.Sprintf("%-10s", row))+"  "+strings.Join(cells, "  "))
+			line := pMuted.Render(fmt.Sprintf("%-*s", width, row)) + "  " + strings.Join(cells, "  ")
+			if newRow {
+				line += pFaintTxt.Render("  (new)")
+			}
+			lines = append(lines, line)
 		}
 	}
 	for i, f := range fields {
 		if f.Row != row {
 			flush()
-			row, cells = f.Row, nil
+			row, cells, newRow = f.Row, nil, !f.In(was)
 		}
 		v := f.Get(sw)
 		text := fieldText(f, v)
 		if len(f.Choices) == 0 && f.Format == nil {
 			text = fmt.Sprintf("%3d", v)
 		}
-		old := f.Get(was)
+		existed := f.In(was)
+		old := 0
+		if existed {
+			old = f.Get(was)
+		}
 		cell := text
 		switch {
 		case p.editing && i == p.field:
@@ -542,6 +557,8 @@ func (m *Model) drawDetail(cfg Config) string {
 				text = p.typed + "▏"
 			}
 			cell = pCursor.Render(text) // no padding: it would knock the column out of line
+		case !existed:
+			cell = pChanged.Render(text)
 		case v != old:
 			cell = pChanged.Render(text) + pFaintTxt.Render(" (was "+fieldText(f, old)+")")
 		}
@@ -589,8 +606,61 @@ func (m *Model) pedalHelp() string {
 	case p.naming:
 		return "type a name · enter save · esc cancel"
 	case p.editing:
+		if m.device.MaxMessages() > 1 {
+			return "↑↓ field · ←→ or −+ change · 0-9 type · n add message · x remove last · enter set · esc done"
+		}
 		return "↑↓ field · ←→ or −+ change · 0-9 type · enter set · esc done"
 	}
 	return "←→/a-d switch · enter edit · n name · w write · u undo · r read\n" +
 		"m mode · x export · i import · v mark & compare · tab log · q quit"
+}
+
+// addMessage appends a message to the slot under the cursor (the first slot
+// when the cursor is on the switch's mode): a CC on the channel the slot
+// already uses, so it is ready to edit.
+func (m *Model) addMessage(f Field) {
+	slot := f.Slot
+	if slot < 0 {
+		slot = 0
+	}
+	sw := m.shown().Switches[m.pui.sel]
+	if m.device.MaxMessages() <= 1 || len(sw.Slots[slot]) >= m.device.MaxMessages() {
+		m.statusMsg = "No room for another message there"
+		return
+	}
+	msg := Message{Type: MsgCC, Channel: 1, Value: 127}
+	if n := len(sw.Slots[slot]); n > 0 {
+		msg.Channel = sw.Slots[slot][n-1].Channel
+	}
+	if m.pui.draft == nil {
+		d := m.cfg.Clone()
+		m.pui.draft = &d
+	}
+	d := &m.pui.draft.Switches[m.pui.sel]
+	d.Slots[slot] = append(d.Slots[slot], msg)
+	m.statusMsg = "Message added — w writes it"
+}
+
+// removeMessage drops the LAST message of the slot under the cursor: the
+// pedal keeps a slot's messages as one unbroken run.
+func (m *Model) removeMessage(f Field) {
+	slot := f.Slot
+	if slot < 0 {
+		slot = 0
+	}
+	sw := m.shown().Switches[m.pui.sel]
+	if m.device.MaxMessages() <= 1 || len(sw.Slots[slot]) == 0 {
+		m.statusMsg = "Nothing to remove there"
+		return
+	}
+	if m.pui.draft == nil {
+		d := m.cfg.Clone()
+		m.pui.draft = &d
+	}
+	d := &m.pui.draft.Switches[m.pui.sel]
+	d.Slots[slot] = d.Slots[slot][:len(d.Slots[slot])-1]
+	if fs := m.curFields(); m.pui.field >= len(fs) {
+		m.pui.field = len(fs) - 1
+	}
+	m.statusMsg = "Last message removed — w writes it"
 }

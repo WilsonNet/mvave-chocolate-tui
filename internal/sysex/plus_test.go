@@ -61,7 +61,9 @@ func TestPlusDecodesTheKnownConfiguration(t *testing.T) {
 		t.Errorf("device mode %d (%q), want Advanced custom mode", cfg.Mode, PlusModeNames[cfg.Mode])
 	}
 
-	cc := func(ch, num, val byte) PlusMessage { return PlusMessage{Type: 0, Channel: ch, Number: num, Value: val} }
+	cc := func(ch, num, val byte) PlusMessage {
+		return PlusMessage{Type: PlusCC, Channel: ch, Number: num, Value: val}
+	}
 	want := [4]PlusSwitch{
 		{Mode: 1, Banks: [2][]PlusMessage{{cc(1, 107, 1)}, {cc(1, 107, 1)}}},
 		{Mode: 1, Banks: [2][]PlusMessage{{cc(1, 107, 2)}, {cc(1, 107, 2)}}},
@@ -87,15 +89,16 @@ func TestPlusDecodesTheKnownConfiguration(t *testing.T) {
 	}
 }
 
-// Switch C's Bank B starts at byte 1008: the last, short byte of the first
-// reply. Dropping a partial final byte loses it.
+// Switch C's Bank B starts at byte 1008 (its first message's "in use" byte):
+// the last, short byte of the first reply. Dropping a partial final byte
+// loses it.
 func TestTheShortFinalByteIsKept(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx")
 	if _, ok := img[1008]; !ok {
 		t.Fatal("byte 1008 missing")
 	}
 	if img[1008] != 1 {
-		t.Errorf("byte 1008 (switch C bank B count) = %d, want 1", img[1008])
+		t.Errorf("byte 1008 (switch C bank B message 1 in use) = %d, want 1", img[1008])
 	}
 }
 
@@ -180,25 +183,97 @@ func TestChangesWritesOnlyWhatDiffers(t *testing.T) {
 	}
 }
 
-func TestChangesRefusesWhatIsUntested(t *testing.T) {
+// Adding a message, as the official app did on a real pedal: its "in use"
+// byte (99) went 0 -> 1 and nothing else changed -- the rest was already the
+// app's default, channel 1 PC 0 0. Here the flag must be written FIRST.
+func TestAddingAMessageWritesItsFlagFirst(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
-
-	add := img.DecodePlus()
-	add.Switches[0].Banks[0] = append(add.Switches[0].Banks[0], PlusMessage{Channel: 1, Number: 1})
-	if _, err := img.PlusChanges(add); err == nil {
-		t.Error("adding a message (a count change, untested) was allowed")
+	want := img.DecodePlus()
+	want.Switches[0].Banks[0] = append(want.Switches[0].Banks[0],
+		PlusMessage{Type: PlusCC, Channel: 2, Number: 64, Value: 127})
+	ch, err := img.PlusChanges(want)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(ch) == 0 || ch[0] != (Write{Addr: 99, Old: 0, New: 1}) {
+		t.Fatalf("first write %+v; want the in-use flag at 99", ch)
+	}
+	got := map[int]byte{}
+	for _, w := range ch[1:] {
+		got[w.Addr] = w.New
+	}
+	if got[100] != 1 || got[101] != PlusCC || got[102] != 64 || got[103] != 127 {
+		t.Errorf("fields %v; want ch 2 (stored 1), CC, 64, 127", got)
+	}
+}
+
+// Removing the message again, as done on the real pedal: only after its
+// fields are back to 0 does its flag go, so the slot ends as a never-used one.
+func TestRemovingTheLastMessageClearsFieldsThenFlag(t *testing.T) {
+	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
+	img[99], img[100], img[101], img[102], img[103] = 1, 1, PlusCC, 64, 127 // a second message
+	want := img.DecodePlus()
+	if len(want.Switches[0].Banks[0]) != 2 {
+		t.Fatalf("the second message was not decoded")
+	}
+	want.Switches[0].Banks[0] = want.Switches[0].Banks[0][:1]
+	ch, err := img.PlusChanges(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 5 || ch[len(ch)-1] != (Write{Addr: 99, Old: 1, New: 0}) {
+		t.Errorf("writes %+v; want four fields cleared, then 99 -> 0", ch)
+	}
+}
+
+func TestPlusChangesRefusesWhatItCannotDo(t *testing.T) {
+	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
 
 	mode := img.DecodePlus()
 	mode.Switches[1].Mode = 9
 	if _, err := img.PlusChanges(mode); err == nil {
 		t.Error("an unknown switch mode was allowed")
 	}
-
 	ch0 := img.DecodePlus()
 	ch0.Switches[2].Banks[0][0].Channel = 0
 	if _, err := img.PlusChanges(ch0); err == nil {
 		t.Error("channel 0 was allowed")
+	}
+	sysex := img.DecodePlus()
+	sysex.Switches[2].Banks[0][0].Type = PlusSysEx
+	if _, err := img.PlusChanges(sysex); err == nil {
+		t.Error("SysEx (unmapped) was allowed")
+	}
+	gapped := loadImage(t, "plus-read1.syx", "plus-read2.syx")
+	gapped[104] = 1 // message 3 in use, message 2 not
+	if _, err := gapped.PlusChanges(gapped.DecodePlus()); err == nil {
+		t.Error("a bank with a gap was edited")
+	}
+}
+
+// What the official app showed on a real pedal, set one at a time on switch A
+// and read back: the stored bytes for each type, and channel 2.
+func TestTheMappedMessageEncoding(t *testing.T) {
+	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
+	for _, tc := range []struct {
+		ch, typ    byte
+		at95, at96 byte
+	}{
+		{1, PlusPC, 0, 0}, {2, PlusCC, 1, 1}, {1, PlusNoteOn, 0, 2}, {1, PlusNoteOff, 0, 3},
+	} {
+		want := img.DecodePlus()
+		want.Switches[0].Banks[0][0].Channel, want.Switches[0].Banks[0][0].Type = tc.ch, tc.typ
+		ch, err := img.PlusChanges(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[int]byte{95: img[95], 96: img[96]}
+		for _, w := range ch {
+			got[w.Addr] = w.New
+		}
+		if got[95] != tc.at95 || got[96] != tc.at96 {
+			t.Errorf("ch %d %s: 95=%d 96=%d, want %d %d", tc.ch, PlusTypeNames[tc.typ], got[95], got[96], tc.at95, tc.at96)
+		}
 	}
 }
 
@@ -215,16 +290,18 @@ func TestAPlusWithOtherSettingsIsStillAPlus(t *testing.T) {
 	}
 }
 
-// Named from M-VAVE's manual is not the same as checked on a pedal: a mode
-// with a name but no hardware check is shown, never written.
-func TestAManualOnlySwitchModeIsNotWritten(t *testing.T) {
+// All five switch modes were set in the official app and read back.
+func TestEverySwitchModeIsWritable(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
-	want := img.DecodePlus()
-	want.Switches[0].Mode = 2 // press / release
-	if _, err := img.PlusChanges(want); err == nil {
-		t.Error("an unchecked switch mode would be written")
-	}
-	if PlusSwitchModeNames[2] != "press / release" {
-		t.Errorf("mode 2 named %q", PlusSwitchModeNames[2])
+	for mode := byte(0); mode <= 4; mode++ {
+		want := img.DecodePlus()
+		want.Switches[0].Mode = mode
+		ch, err := img.PlusChanges(want)
+		if err != nil {
+			t.Errorf("mode %d: %v", mode, err)
+		}
+		if mode != 1 && (len(ch) != 1 || ch[0].Addr != 93 || ch[0].New != mode) {
+			t.Errorf("mode %d: writes %+v; want one, at 93", mode, ch)
+		}
 	}
 }

@@ -513,7 +513,23 @@ func (m *Model) parseMidiBytes(data []byte) {
 			cc := int(data[i+1])
 			val := int(data[i+2])
 			m.setSwitchByCC(cc, val > 0)
-			m.notePress(b&0x0F+1, data[i+1], data[i+2])
+			m.notePress(Message{Type: MsgCC, Channel: b&0x0F + 1, Number: data[i+1], Value: data[i+2]})
+			i += 3
+		case b >= 0xC0 && b < 0xD0: // Program Change: two bytes
+			if i+2 > len(data) {
+				return
+			}
+			m.notePress(Message{Type: MsgPC, Channel: b&0x0F + 1, Number: data[i+1]})
+			i += 2
+		case b >= 0x80 && b < 0xA0: // Note Off / Note On: three bytes
+			if i+3 > len(data) {
+				return
+			}
+			typ := MsgNoteOn
+			if b < 0x90 || data[i+2] == 0 { // velocity 0 is a Note Off
+				typ = MsgNoteOff
+			}
+			m.notePress(Message{Type: typ, Channel: b&0x0F + 1, Number: data[i+1], Value: data[i+2]})
 			i += 3
 		case b == 0xF0:
 			end := -1

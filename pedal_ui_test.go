@@ -49,9 +49,9 @@ func keys(m *Model, ks ...string) {
 }
 
 // The change made on the real pedal, through the screen: A, edit, down to
-// "2nd press value" (mode, ch, CC, value, ch, CC, value), type 4.
+// "2nd press value" (mode; ch, type, #, value; ch, type, #, value), type 4.
 func editABankBValueTo4(m *Model) {
-	keys(m, "a", "enter", "down", "down", "down", "down", "down", "down", "4", "enter", "esc")
+	keys(m, "a", "enter", "down", "down", "down", "down", "down", "down", "down", "down", "4", "enter", "esc")
 }
 
 func TestEditingStagesOnlyTheChangedByte(t *testing.T) {
@@ -99,15 +99,15 @@ func TestUndoDropsTheDraft(t *testing.T) {
 	}
 }
 
-func TestModeOnlyCyclesThroughKnownModes(t *testing.T) {
+func TestSwitchModeCyclesThroughAllFive(t *testing.T) {
 	m := plusModel(t)
 	keys(m, "a", "enter", "+", "esc")
-	if got := m.pui.draft.Switches[0].Mode; got != 4 {
-		t.Fatalf("mode after + is %d, want 4", got)
+	if got := m.pui.draft.Switches[0].Mode; got != 2 {
+		t.Fatalf("mode after + is %d, want 2 (press / release)", got)
 	}
-	keys(m, "enter", "+", "esc")
-	if got := m.pui.draft.Switches[0].Mode; got != 1 {
-		t.Fatalf("mode after a second + is %d, want 1", got)
+	keys(m, "enter", "-", "-", "esc")
+	if got := m.pui.draft.Switches[0].Mode; got != 0 {
+		t.Fatalf("mode after two - is %d, want 0 (single tap)", got)
 	}
 }
 
@@ -275,8 +275,9 @@ func TestABackupNeedingAnUntestedChangeIsRefused(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := plusModel(t)
 	m.exportBackup()
-	m.pedalImage[94] = 2 // the pedal now holds two messages in A's first bank
-	m.pedalImage[100] = 1
+	// The pedal now has a gap in A's first bank: message 3 in use, 2 not --
+	// something the official app does not make, and this tool will not edit.
+	m.pedalImage[104] = 1
 	m.notePedalRead()
 	keys(m, "i", "enter")
 	if m.pui.draft != nil || !strings.Contains(m.statusMsg, "Cannot restore") {
@@ -306,12 +307,16 @@ func TestPlusDescribesItsBytes(t *testing.T) {
 	for addr, want := range map[int]string{
 		0:    "device mode",
 		93:   "switch A · mode",
-		94:   "switch A · bank A · message count",
-		97:   "switch A · bank A #1 · CC",
-		174:  "switch A · bank B · message count",
-		1348: "switch D · bank A #1 · CC",
+		94:   "switch A · bank A #1 · in use",
+		95:   "switch A · bank A #1 · channel",
+		96:   "switch A · bank A #1 · type",
+		97:   "switch A · bank A #1 · number",
+		99:   "switch A · bank A #2 · in use",
+		174:  "switch A · bank B #1 · in use",
+		178:  "switch A · bank B #1 · value",
+		1348: "switch D · bank A #1 · number",
 		1349: "switch D · bank A #1 · value",
-		1428: "switch D · bank B #1 · CC",
+		1428: "switch D · bank B #1 · number",
 		12:   "not mapped",
 	} {
 		if got := d.Describe(addr); got != want {
@@ -454,5 +459,68 @@ func TestTheTableScreenOffersTheOriginalsModes(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "Advanced Custom") {
 		t.Error("table screen does not show the picker")
+	}
+}
+
+// n adds a message to the bank under the cursor; writing it sets the in-use
+// flag first, exactly as the official app's add did on a real pedal (99).
+func TestAddingAMessageThroughTheScreen(t *testing.T) {
+	m := plusModel(t)
+	m.allowWrite = true
+	keys(m, "a", "enter", "down", "n", "esc") // cursor on bank A's channel
+	if got := len(m.pui.draft.Switches[0].Slots[0]); got != 2 {
+		t.Fatalf("bank A holds %d messages, want 2", got)
+	}
+	keys(m, "w")
+	if !m.pui.confirm || len(m.pui.pending) == 0 || m.pui.pending[0] != (sysex.Write{Addr: 99, Old: 0, New: 1}) {
+		t.Fatalf("pending %+v; want the in-use flag at 99 first", m.pui.pending)
+	}
+}
+
+// x removes the LAST message of the bank under the cursor.
+func TestRemovingAMessageThroughTheScreen(t *testing.T) {
+	m := plusModel(t)
+	m.allowWrite = true
+	keys(m, "a", "enter", "down", "x", "esc")
+	if got := len(m.pui.draft.Switches[0].Slots[0]); got != 0 {
+		t.Fatalf("bank A holds %d messages, want 0", got)
+	}
+	keys(m, "w")
+	n := len(m.pui.pending)
+	if n == 0 || m.pui.pending[n-1] != (sysex.Write{Addr: 94, Old: 1, New: 0}) {
+		t.Errorf("pending %+v; want the in-use flag at 94 cleared last", m.pui.pending)
+	}
+}
+
+func TestChangingAMessageType(t *testing.T) {
+	m := plusModel(t)
+	keys(m, "a", "enter", "down", "down", "-", "esc") // CC -> PC
+	if got := m.pui.draft.Switches[0].Slots[0][0].Type; got != MsgPC {
+		t.Fatalf("type %d, want PC", got)
+	}
+	if !strings.Contains(m.drawDetail(m.shown()), "PC") {
+		t.Errorf("detail:\n%s", m.drawDetail(m.shown()))
+	}
+}
+
+func TestAProgramChangePressIsTraced(t *testing.T) {
+	m := plusModel(t)
+	c := m.cfg.Clone()
+	c.Switches[2].Slots[0][0] = Message{Type: MsgPC, Channel: 1, Number: 5}
+	m.cfg = &c
+	m.parseMidiBytes([]byte{0xC0, 5})
+	if !strings.Contains(m.drawLive(), "C  1st press ch1 PC5") {
+		t.Errorf("live feed:\n%s", m.drawLive())
+	}
+}
+
+// Drawing a switch with a message that exists only in the draft crashed: the
+// "was" lookup indexed the pedal's shorter bank.
+func TestANewMessageDrawsAsNew(t *testing.T) {
+	m := plusModel(t)
+	keys(m, "a", "enter", "down", "n")
+	out := m.drawDetail(m.shown())
+	if !strings.Contains(out, "(new)") {
+		t.Errorf("detail:\n%s", out)
 	}
 }
