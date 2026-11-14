@@ -214,3 +214,17 @@ func TestAPlusWithOtherSettingsIsStillAPlus(t *testing.T) {
 		t.Error("a Plus with different settings was not recognised")
 	}
 }
+
+// Named from M-VAVE's manual is not the same as checked on a pedal: a mode
+// with a name but no hardware check is shown, never written.
+func TestAManualOnlySwitchModeIsNotWritten(t *testing.T) {
+	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
+	want := img.DecodePlus()
+	want.Switches[0].Mode = 2 // press / release
+	if _, err := img.PlusChanges(want); err == nil {
+		t.Error("an unchecked switch mode would be written")
+	}
+	if PlusSwitchModeNames[2] != "press / release" {
+		t.Errorf("mode 2 named %q", PlusSwitchModeNames[2])
+	}
+}

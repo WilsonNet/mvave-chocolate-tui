@@ -46,11 +46,21 @@ var PlusModeNames = map[byte]string{
 	6: "Video model",
 }
 
-// Switch modes seen so far. Others exist in the app and are not yet mapped.
+// The five switch modes, in the order M-VAVE's "Chocolate Plus Software
+// Instructions" lists them -- and 1 and 4, the two read off a real pedal, sit
+// exactly where that order puts them. 0, 2 and 3 are named from the manual
+// only; plus.go refuses to WRITE them until each is checked on hardware.
 var PlusSwitchModeNames = map[byte]string{
-	1: "single step (two banks)",
-	4: "step short / step long",
+	0: "single tap",              // the same message every tap
+	1: "single step (two banks)", // alternates: 1st press bank A, 2nd bank B
+	2: "press / release",         // bank A on press, bank B on release
+	3: "long press",              // sends on a long press
+	4: "step short / step long",  // bank A on a short tap, bank B on a long press
 }
+
+// PlusSwitchModesChecked are the switch modes a write may set: those seen on
+// a real pedal.
+var PlusSwitchModesChecked = []byte{1, 4}
 
 const (
 	plusSwitchBase   = 93  // first byte of switch A
@@ -146,8 +156,12 @@ func (img Image) PlusChanges(want PlusConfig) ([]Write, error) {
 		base := plusSwitchBase + s*plusSwitchStride
 		w := want.Switches[s]
 		if w.Mode != have.Switches[s].Mode {
-			if _, known := PlusSwitchModeNames[w.Mode]; !known {
-				return nil, fmt.Errorf("switch %c: mode %d is not one this tool knows", 'A'+s, w.Mode)
+			checked := false
+			for _, ok := range PlusSwitchModesChecked {
+				checked = checked || ok == w.Mode
+			}
+			if !checked {
+				return nil, fmt.Errorf("switch %c: mode %d has not been checked on a real pedal yet", 'A'+s, w.Mode)
 			}
 			set(base, w.Mode)
 		}
