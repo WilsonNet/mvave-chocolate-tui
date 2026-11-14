@@ -113,7 +113,14 @@ type Model struct {
 	allowWrite bool
 	// rxPending holds a SysEx frame that has started but not yet ended: a
 	// 1173-byte settings reply arrives over several reads.
-	rxPending  []byte
+	rxPending []byte
+	// pedalImage collects settings replies by address. device is the model
+	// a complete read was recognised as, cfg that read decoded; both stay nil
+	// for a model no Device knows, which keeps the table screen.
+	pedalImage sysex.Image
+	device     Device
+	cfg        *Config
+	pui        pedalUI
 	log        []MidiMsg
 	statusMsg  string
 	errorMsg   string
@@ -267,6 +274,7 @@ func NewModel(midiPath string) Model {
 	vp.SetContent("MIDI log...")
 
 	return Model{
+		pui:       pedalUI{labels: loadLabels()},
 		midiPath:  midiPath,
 		midiMsgs:  make(chan MidiMsg, 256),
 		config:    cfg,
@@ -354,6 +362,9 @@ drained:
 		}
 		return m, tea.Batch(cmds...)
 
+	case writeDoneMsg:
+		m.finishWrite(msg)
+
 	case tickMsg:
 		cmds = append(cmds, tickCmd())
 
@@ -366,6 +377,10 @@ drained:
 		m.table.SetHeight(msg.Height - 20)
 
 	case tea.KeyMsg:
+		if m.cfg != nil {
+			cmds = append(cmds, m.handlePedalKey(msg))
+			return m, tea.Batch(cmds...)
+		}
 		if m.editSwitch {
 			cmds = append(cmds, m.handleEdit(msg))
 			m.refreshTable()
@@ -466,6 +481,12 @@ func (m *Model) processMidiMessage(msg MidiMsg) {
 }
 
 func (m *Model) parseMidiBytes(data []byte) {
+	gotReply := false
+	defer func() {
+		if gotReply {
+			m.notePedalRead()
+		}
+	}()
 	if len(m.rxPending) > 0 {
 		data = append(m.rxPending, data...)
 		m.rxPending = nil
@@ -480,6 +501,7 @@ func (m *Model) parseMidiBytes(data []byte) {
 			cc := int(data[i+1])
 			val := int(data[i+2])
 			m.setSwitchByCC(cc, val > 0)
+			m.notePress(b&0x0F+1, data[i+1], data[i+2])
 			i += 3
 		case b == 0xF0:
 			end := -1
@@ -495,11 +517,27 @@ func (m *Model) parseMidiBytes(data []byte) {
 				return
 			}
 			frame := data[i : end+1]
-			m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "SYX " + hex.EncodeToString(frame)})
+			if len(frame) > 64 {
+				m.log = append(m.log, MidiMsg{Timestamp: time.Now(),
+					Hex: fmt.Sprintf("SYX %x… (%d bytes)", frame[:8], len(frame))})
+			} else {
+				m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "SYX " + hex.EncodeToString(frame)})
+			}
+			// Their mode parser reads a reply as if it began at address 0;
+			// only feed it the one that does.
+			addr, _, isReply := sysex.DecodeReadReply(frame)
+			if isReply && m.pedalImage != nil {
+				m.pedalImage.Add(frame)
+				gotReply = true
+			}
 			if sysex.IsOKResponse(frame) {
+				select {
+				case pedalAck <- struct{}{}:
+				default:
+				}
 				m.log = append(m.log, MidiMsg{Timestamp: time.Now(), Hex: "OK — config write accepted"})
 			}
-			if cr := sysex.ParseConfigResponse(frame); cr != nil {
+			if cr := sysex.ParseConfigResponse(frame); cr != nil && (!isReply || addr == 0) {
 				// Only update UI mode display; never overwrite config from dump
 				// (AdvCustom CC is not stored in 0D41 dump).
 				m.deviceMode = cr.Mode
@@ -641,12 +679,42 @@ func (m *Model) requestConfig() {
 		return
 	}
 	dev := m.midi
+	// m.cfg stays: the screen keeps showing the last read until the new one
+	// is complete, instead of dropping back to the table mid-read.
+	m.pedalImage = sysex.Image{}
 	m.statusMsg = "Reading device settings..."
 	go func() {
-		if err := dev.SendSysex(sysex.BuildReadSettings()); err != nil {
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: read: " + err.Error()}
+		// Both chunks of region 2, as the official app reads them.
+		for i, req := range sysex.ReadRequests {
+			if i > 0 {
+				time.Sleep(400 * time.Millisecond) // let the first reply finish
+			}
+			if err := dev.SendSysex(req); err != nil {
+				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: read: " + err.Error()}
+				return
+			}
 		}
 	}()
+}
+
+// notePedalRead runs after every settings reply: once the read is complete
+// and a known model recognises it, the pedal screen takes over.
+func (m *Model) notePedalRead() {
+	d := recognise(m.pedalImage)
+	if d == nil {
+		return
+	}
+	cfg := d.Decode(m.pedalImage)
+	m.device, m.cfg = d, &cfg
+	// The table's edit and send write this TUI's Advanced Custom layout; on
+	// the pedal screen they would be the wrong bytes, so they go -- disabled,
+	// not just hidden: key.Matches ignores a disabled binding.
+	m.keymap.Edit.SetEnabled(false)
+	m.keymap.Send.SetEnabled(false)
+	m.statusMsg = "Read from pedal"
+	if m.pui.expect != nil {
+		m.verifyWrite()
+	}
 }
 
 func (m *Model) View() string {
@@ -659,6 +727,9 @@ func (m *Model) View() string {
 	}
 	if m.width == 0 {
 		return "Loading..."
+	}
+	if m.cfg != nil {
+		return m.viewPedal()
 	}
 
 	connStr := redStyle.Render("○ Disconnected")
