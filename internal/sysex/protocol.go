@@ -443,9 +443,24 @@ func Checksum(data []byte) (byte, byte) {
 	switch {
 	case len(data) >= 4 && data[0] == 0x00 && data[1] == 0x32 &&
 		data[2] == 0x09 && data[3] == 0x49:
-		sub := uint16(data[8])
-		val := uint16(data[len(data)-1])
-		v := 0x28A - sum - sub - val
+		// The device checksums the DECODED message: each 4-byte group of 7-bit
+		// MIDI bytes is a 28-bit little-endian number, and what it adds up is
+		// those numbers' 8-bit bytes (plus the value), doubled. The old
+		// `0x28A - sum - sub - val` agrees with this only while the address's
+		// second byte is even -- at address 178 it was off by 255 and a real
+		// Chocolate Plus silently ignored the write.
+		if len(data) < 17 {
+			return 0, 0
+		}
+		var s8 int
+		for g := 4; g+4 <= 16; g += 4 {
+			w := int(data[g]) | int(data[g+1])<<7 | int(data[g+2])<<14 | int(data[g+3])<<21
+			s8 += w&0xFF + (w>>8)&0xFF + (w>>16)&0xFF + (w>>24)&0xFF
+		}
+		for _, b := range data[16:] {
+			s8 += int(b)
+		}
+		v := 660 - 2*s8
 		return byte(v & 0x7F), byte((v >> 7) & 0x7F)
 
 	case len(data) >= 4 && data[0] == 0x00 && data[1] == 0x32 &&

@@ -251,3 +251,27 @@ func TestParseConfigResponseRealFrame(t *testing.T) {
 		t.Errorf("bank 0 CC = %d, want 48", cr.CC[0])
 	}
 }
+
+// Writes a real Chocolate Plus ACKNOWLEDGED (F0 00 32 01 08 ... F7) on
+// 14-11-2026. Address 178 has an odd second byte (0x32 0x01); there the old
+// `0x28A - sum - sub - val` gave 397 (0D 03), and the device ignored the
+// write without replying.
+func TestChecksumMatchesWritesTheDeviceAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		lo, hi         byte // address bytes 9 and 10
+		value          byte
+		wantLo, wantHi byte
+	}{
+		{0x61, 0x00, 0x6B, 0x5C, 0x00}, // address 97, value 107
+		{0x32, 0x01, 0x01, 0x0E, 0x01}, // address 178, value 1
+		{0x32, 0x01, 0x04, 0x08, 0x01}, // address 178, value 4
+	} {
+		data := []byte{0x00, 0x32, 0x09, 0x49, 0x00, 0x00, 0x00, 0x02,
+			tc.lo, tc.hi, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, tc.value}
+		lo, hi := Checksum(data)
+		if lo != tc.wantLo || hi != tc.wantHi {
+			t.Errorf("address %d value %d: checksum %02X %02X, want %02X %02X",
+				int(tc.lo)|int(tc.hi)<<7, tc.value, lo, hi, tc.wantLo, tc.wantHi)
+		}
+	}
+}
