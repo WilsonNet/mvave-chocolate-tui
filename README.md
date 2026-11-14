@@ -26,14 +26,20 @@ No more Windows VM or Wine just to change footswitch assignments. Edit CC number
 go run .
 ```
 
-The TUI auto-detects your Chocolate and shows the switch grid.
+The TUI auto-detects your Chocolate, reads its settings and shows the switch
+grid. **Connecting never writes to the device.** To send configuration, start
+it with `--write`:
+
+```bash
+go run . --write
+```
 
 ## Usage
 
 | Key | Action |
 |-----|--------|
 | `e` | Edit highlighted switch |
-| `s` | Send all config to device |
+| `s` | Send all config to device (needs `--write`) |
 | `r` | Read current config from device |
 | `m` | Change operating mode |
 | `tab` / `l` | Toggle MIDI log view |
@@ -51,7 +57,7 @@ The TUI auto-detects your Chocolate and shows the switch grid.
 
 1. Set the Chocolate to **Custom CC** mode (press `m`, select "Custom CC", press `Enter`)
 2. Edit each switch to match the CC numbers your Ampero expects
-3. Press `s` to send
+3. Press `s` to send (start with `--write`)
 4. Connect the Chocolate MIDI OUT to your Ampero MIDI IN
 
 ## How it works
