@@ -60,6 +60,29 @@ go run . --write
 3. Press `s` to send (start with `--write`)
 4. Connect the Chocolate MIDI OUT to your Ampero MIDI IN
 
+## The pedal screen (Chocolate Plus, and the original in Advanced Custom)
+
+When a read is recognised as a model the TUI knows, it switches to a pedal
+screen: the four switches drawn as they sit on the pedal, the selected one in
+detail, and presses as they happen, each traced to the switch that sent it.
+
+| Key | Action |
+|-----|--------|
+| `←→` / `a`–`d` | Select a switch |
+| `enter` | Edit it: `↑↓` field, `←→` or `-`/`+` change, digits type a value |
+| `n` | Name the switch (kept locally; the pedal stores no names) |
+| `w` | Write the edits: lists every byte first, then sends each and waits for the device's OK, then reads back to verify (needs `--write`) |
+| `u` | Discard the edits |
+| `x` / `i` | Back up every byte read / restore a backup as edits |
+| `m` then `r` | Mark this read; the next read lists every byte that changed, and what it is |
+| `r` | Read again |
+
+- **Chocolate Plus** -- checked against a real pedal. Group 1 only for now:
+  groups 2–8 and the group count live outside the two reads.
+- **Original Chocolate, Advanced Custom mode** -- built from this TUI's own
+  decoder and writer and **not yet checked on hardware**; the screen says so.
+  Reports welcome. Other modes keep the table above.
+
 ## How it works
 
 The M-Vave Chocolate is a Jieli-based USB MIDI device (vendor `00 32`). It accepts SysEx configuration messages to reprogram what each footswitch sends. The cbix project at [cbix/mvave-chocolate-sysex](https://github.com/cbix/mvave-chocolate-sysex) documented the protocol.
