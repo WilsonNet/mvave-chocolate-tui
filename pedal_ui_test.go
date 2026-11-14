@@ -286,7 +286,7 @@ func TestABackupNeedingAnUntestedChangeIsRefused(t *testing.T) {
 
 func TestCompareListsWhatChangedAndWhatItIs(t *testing.T) {
 	m := plusModel(t)
-	keys(m, "m")
+	keys(m, "v")
 	m.pedalImage[178] = 4 // as if the official app had changed it, then r
 	out := m.drawCompare()
 	if !strings.Contains(out, "178") || !strings.Contains(out, "switch A · bank B #1 · value") {
@@ -295,9 +295,9 @@ func TestCompareListsWhatChangedAndWhatItIs(t *testing.T) {
 	if strings.Count(out, "→") != 1 {
 		t.Errorf("listed more than the one change:\n%s", out)
 	}
-	keys(m, "m")
+	keys(m, "v")
 	if m.pui.mark != nil {
-		t.Error("m did not stop comparing")
+		t.Error("v did not stop comparing")
 	}
 }
 
@@ -337,5 +337,122 @@ func TestAnUnhandledModelKeepsTheTableAndItsMode(t *testing.T) {
 	}
 	if !m.modeKnown || m.deviceMode != sysex.ModeProgramChangeB {
 		t.Errorf("modeKnown=%v deviceMode=%d, want Program Change B", m.modeKnown, m.deviceMode)
+	}
+}
+
+// keysOn feeds keys through Update, as the program does, so both the mode
+// picker and the screen underneath see them in the right order.
+func keysOn(m *Model, ks ...string) tea.Cmd {
+	var last tea.Cmd
+	for _, k := range ks {
+		var msg tea.KeyMsg
+		switch k {
+		case "enter":
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "esc":
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		case "up":
+			msg = tea.KeyMsg{Type: tea.KeyUp}
+		case "down":
+			msg = tea.KeyMsg{Type: tea.KeyDown}
+		default:
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		}
+		_, last = m.Update(msg)
+	}
+	return last
+}
+
+func TestModePickerOpensOnTheCurrentMode(t *testing.T) {
+	m := plusModel(t)
+	dev, _ := openFileDevice(t)
+	m.midi = dev
+	keysOn(m, "m")
+	if !m.mp.open || m.mp.modes[m.mp.pick] != 3 {
+		t.Fatalf("open=%v pick=%v", m.mp.open, m.mp.modes)
+	}
+	if !strings.Contains(m.viewPedal(), "Advanced custom mode  · current") {
+		t.Errorf("picker:\n%s", m.drawModePicker())
+	}
+}
+
+func TestModeChangeNeedsWrite(t *testing.T) {
+	m := plusModel(t)
+	dev, path := openFileDevice(t)
+	m.midi = dev
+	keysOn(m, "m", "up", "enter")
+	if m.mp.confirm || m.mp.writing || !strings.Contains(m.statusMsg, "--write") {
+		t.Fatalf("confirm=%v writing=%v status=%q", m.mp.confirm, m.mp.writing, m.statusMsg)
+	}
+	assertOnlyReads(t, path)
+}
+
+// The change tested on a real Chocolate Plus: Advanced custom (3) to Custom
+// control (2) -- one byte at address 0, acknowledged, read back.
+func TestAModeChangeWritesAddressZeroAndVerifies(t *testing.T) {
+	m := plusModel(t)
+	m.allowWrite = true
+	dev, path := openFileDevice(t)
+	m.midi = dev
+	keysOn(m, "m", "up", "enter")
+	if !m.mp.confirm || m.mp.target != 2 {
+		t.Fatalf("confirm=%v target=%d", m.mp.confirm, m.mp.target)
+	}
+	cmd := keysOn(m, "y")
+	pedalAck <- struct{}{} // the device's OK
+	m.Update(cmd())
+
+	sent, _ := os.ReadFile(path)
+	want, _ := sysex.BuildWrite(0, 2)
+	if !strings.Contains(string(sent), string(want)) {
+		t.Fatalf("mode write not sent; device got % X", sent)
+	}
+	if !m.mp.expect {
+		t.Fatal("not waiting to verify the mode")
+	}
+	// The read-back: the same configuration, mode byte now 2 -- as the real
+	// pedal answered.
+	img := sysex.Image{}
+	for _, name := range []string{"plus-read1.syx", "plus-read2.syx"} {
+		frame, _ := os.ReadFile("internal/sysex/testdata/" + name)
+		img.Add(frame)
+	}
+	img[0] = 2
+	m.pedalImage = img
+	m.notePedalRead()
+	if m.statusMsg != "Mode changed to Custom control ✓" || m.cfg == nil {
+		t.Errorf("status %q, still on the pedal screen=%v", m.statusMsg, m.cfg != nil)
+	}
+}
+
+func TestAnOriginalLeavingAdvancedCustomGetsTheTableBack(t *testing.T) {
+	m := NewModel("/dev/null")
+	m.width, m.height = 100, 40
+	m.pedalImage = originalAdvancedImage()
+	for a := 0x80; a < 1858; a++ { // a finished read covers both chunks
+		m.pedalImage[a] = 0
+	}
+	m.notePedalRead()
+	if m.cfg == nil {
+		t.Fatal("Advanced Custom not on the pedal screen")
+	}
+	m.pedalImage[0] = sysex.ModeProgramChangeA
+	m.notePedalRead()
+	if m.cfg != nil || m.device != nil || !m.keymap.Edit.Enabled() {
+		t.Errorf("still on the pedal screen after leaving Advanced Custom")
+	}
+}
+
+func TestTheTableScreenOffersTheOriginalsModes(t *testing.T) {
+	m := NewModel("/dev/null")
+	m.width, m.height = 100, 40
+	dev, _ := openFileDevice(t)
+	m.midi = dev
+	keysOn(&m, "m")
+	if !m.mp.open || len(m.mp.modes) != len(sysex.ModeNames) {
+		t.Fatalf("open=%v modes=%v", m.mp.open, m.mp.modes)
+	}
+	if !strings.Contains(m.View(), "Advanced Custom") {
+		t.Error("table screen does not show the picker")
 	}
 }

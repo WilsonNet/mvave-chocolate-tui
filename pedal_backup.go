@@ -11,7 +11,7 @@ package main
 // would change, and writing goes through the same checks, confirmation and
 // read-back as any edit. A restore can do exactly what an edit can.
 //
-// Comparing marks the current read; the next read is listed byte by byte
+// Comparing (`v`) marks the current read; the next read is listed byte by byte
 // against it, with what each byte means where the model knows. That is how an
 // unknown setting gets mapped: mark, change it in the official app, read.
 

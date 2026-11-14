@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 
 	"mvave-chocolate-tui/internal/sysex"
 )
@@ -87,6 +88,8 @@ type Device interface {
 	// known to be safe on this model.
 	Changes(img sysex.Image, want Config) ([]sysex.Write, error)
 	ModeName(mode byte) string
+	// Modes lists the operating modes the device can be switched to.
+	Modes() []byte
 	SlotNames(sw Switch) []string
 	Fields(sw Switch) []Field
 	// Match finds the switch and slot that send this message.
@@ -153,12 +156,24 @@ func (plusDevice) ModeName(mode byte) string {
 	return fmt.Sprintf("mode %d", mode)
 }
 
+// Modes are the device modes `m` offers: the first four, where the official
+// app's list and M-VAVE's manual agree (2 and 3 also checked on a real pedal).
+// After those the two lists differ by firmware -- the manual has Advanced
+// Custom 1 AND 2 -- so a mode index past 3 could mean either; not offered.
+func (plusDevice) Modes() []byte { return []byte{0, 1, 2, 3} }
+
 func (plusDevice) SlotNames(sw Switch) []string {
 	switch sw.Mode {
-	case 4:
-		return []string{"short", "long"}
+	case 0:
+		return []string{"tap", "bank B"}
 	case 1:
 		return []string{"1st press", "2nd press"}
+	case 2:
+		return []string{"press", "release"}
+	case 3:
+		return []string{"long", "bank B"}
+	case 4:
+		return []string{"short", "long"}
 	}
 	return []string{"bank A", "bank B"}
 }
@@ -192,8 +207,9 @@ func (plusDevice) Changes(img sysex.Image, want Config) ([]sysex.Write, error) {
 	return img.PlusChanges(p)
 }
 
-// plusSwitchModes are the switch modes a write may set: those read off a pedal.
-var plusSwitchModes = []byte{1, 4}
+// plusSwitchModes are the switch modes editing cycles through: only those
+// checked on a real pedal.
+var plusSwitchModes = sysex.PlusSwitchModesChecked
 
 func (d plusDevice) Fields(sw Switch) []Field {
 	f := []Field{{Row: "mode", Choices: plusSwitchModes,
@@ -272,6 +288,15 @@ func (originalDevice) ModeName(mode byte) string {
 		return n
 	}
 	return fmt.Sprintf("mode %d", mode)
+}
+
+func (originalDevice) Modes() []byte {
+	var out []byte
+	for mode := range sysex.ModeNames {
+		out = append(out, mode)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func (originalDevice) SlotNames(Switch) []string {

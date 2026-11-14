@@ -121,6 +121,7 @@ type Model struct {
 	device     Device
 	cfg        *Config
 	pui        pedalUI
+	mp         modePicker
 	log        []MidiMsg
 	statusMsg  string
 	errorMsg   string
@@ -148,6 +149,7 @@ type keyMap struct {
 	Edit      key.Binding
 	Send      key.Binding
 	Read      key.Binding
+	Mode      key.Binding
 	LogToggle key.Binding
 	Up        key.Binding
 	Down      key.Binding
@@ -156,12 +158,12 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Edit, k.Send, k.Read, k.Tab, k.Quit}
+	return []key.Binding{k.Edit, k.Send, k.Read, k.Mode, k.Tab, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Edit, k.Send, k.Read},
+		{k.Edit, k.Send, k.Read, k.Mode},
 		{k.Tab, k.Up, k.Down, k.Quit},
 	}
 }
@@ -172,6 +174,7 @@ var defaultKeymap = keyMap{
 	Edit:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 	Send:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
 	Read:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "read")),
+	Mode:      key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mode")),
 	LogToggle: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log")),
 	Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
@@ -365,6 +368,9 @@ drained:
 	case writeDoneMsg:
 		m.finishWrite(msg)
 
+	case modeDoneMsg:
+		m.finishMode(msg)
+
 	case tickMsg:
 		cmds = append(cmds, tickCmd())
 
@@ -377,6 +383,10 @@ drained:
 		m.table.SetHeight(msg.Height - 20)
 
 	case tea.KeyMsg:
+		if m.mp.open || m.mp.writing {
+			cmds = append(cmds, m.handleModeKey(msg))
+			return m, tea.Batch(cmds...)
+		}
 		if m.cfg != nil {
 			cmds = append(cmds, m.handlePedalKey(msg))
 			return m, tea.Batch(cmds...)
@@ -400,6 +410,8 @@ drained:
 			m.startEdit(m.table.Cursor())
 		case key.Matches(msg, m.keymap.Read):
 			m.requestConfig()
+		case key.Matches(msg, m.keymap.Mode):
+			m.openModePicker()
 		case key.Matches(msg, m.keymap.Send):
 			m.sendAllConfig()
 		case key.Matches(msg, m.keymap.Up):
@@ -700,8 +712,16 @@ func (m *Model) requestConfig() {
 // notePedalRead runs after every settings reply: once the read is complete
 // and a known model recognises it, the pedal screen takes over.
 func (m *Model) notePedalRead() {
+	verified := m.verifyMode()
 	d := recognise(m.pedalImage)
 	if d == nil {
+		// A finished read no model recognises -- an original Chocolate that
+		// left Advanced Custom, say -- hands back to the table screen.
+		if m.cfg != nil && m.pedalImage.PlusComplete() {
+			m.device, m.cfg = nil, nil
+			m.keymap.Edit.SetEnabled(true)
+			m.keymap.Send.SetEnabled(true)
+		}
 		return
 	}
 	cfg := d.Decode(m.pedalImage)
@@ -711,7 +731,9 @@ func (m *Model) notePedalRead() {
 	// not just hidden: key.Matches ignores a disabled binding.
 	m.keymap.Edit.SetEnabled(false)
 	m.keymap.Send.SetEnabled(false)
-	m.statusMsg = "Read from pedal"
+	if !verified {
+		m.statusMsg = "Read from pedal"
+	}
 	if m.pui.expect != nil {
 		m.verifyWrite()
 	}
@@ -730,6 +752,11 @@ func (m *Model) View() string {
 	}
 	if m.cfg != nil {
 		return m.viewPedal()
+	}
+	if m.mp.open || m.mp.writing {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render("M-Vave Chocolate"), "", m.drawModePicker(), "",
+			statusStyle.Render(m.statusMsg), pMuted.Render(m.modeHelp()))
 	}
 
 	connStr := redStyle.Render("○ Disconnected")

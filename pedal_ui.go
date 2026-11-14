@@ -285,6 +285,8 @@ func (m *Model) handlePedalKey(msg tea.KeyMsg) tea.Cmd {
 	case "i":
 		p.files, p.pick, p.picking = backups(m.device.Product()), 0, true
 	case "m":
+		m.openModePicker()
+	case "v":
 		if p.mark != nil {
 			p.mark = nil
 			m.statusMsg = "Stopped comparing"
@@ -428,6 +430,8 @@ func (m *Model) viewPedal() string {
 	switch {
 	case p.confirm:
 		lower = m.drawConfirm()
+	case m.mp.open || m.mp.writing:
+		lower = m.drawModePicker()
 	case p.picking:
 		lower = m.drawBackups()
 	case p.mark != nil:
@@ -574,6 +578,8 @@ func (m *Model) drawConfirm() string {
 func (m *Model) pedalHelp() string {
 	p := &m.pui
 	switch {
+	case m.mp.open || m.mp.writing:
+		return m.modeHelp()
 	case p.writing:
 		return "writing…"
 	case p.confirm:
@@ -586,5 +592,5 @@ func (m *Model) pedalHelp() string {
 		return "↑↓ field · ←→ or −+ change · 0-9 type · enter set · esc done"
 	}
 	return "←→/a-d switch · enter edit · n name · w write · u undo · r read\n" +
-		"x export · i import · m mark & compare · tab log · q quit"
+		"m mode · x export · i import · v mark & compare · tab log · q quit"
 }

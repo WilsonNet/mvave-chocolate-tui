@@ -41,7 +41,7 @@ go run . --write
 | `e` | Edit highlighted switch |
 | `s` | Send all config to device (needs `--write`) |
 | `r` | Read current config from device |
-| `m` | Change operating mode |
+| `m` | Change operating mode (needs `--write`; read back to verify) |
 | `tab` / `l` | Toggle MIDI log view |
 | `↑↓←→` / `h/j/k/l` | Navigate switch grid |
 | `q` | Quit |
@@ -74,7 +74,8 @@ detail, and presses as they happen, each traced to the switch that sent it.
 | `w` | Write the edits: lists every byte first, then sends each and waits for the device's OK, then reads back to verify (needs `--write`) |
 | `u` | Discard the edits |
 | `x` / `i` | Back up every byte read / restore a backup as edits |
-| `m` then `r` | Mark this read; the next read lists every byte that changed, and what it is |
+| `v` then `r` | Mark this read; the next read lists every byte that changed, and what it is |
+| `m` | Change the operating mode (needs `--write`; read back to verify) |
 | `r` | Read again |
 
 - **Chocolate Plus** -- checked against a real pedal. Group 1 only for now:
