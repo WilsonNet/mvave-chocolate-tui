@@ -91,17 +91,28 @@ type Switch struct {
 
 // Config is a model-neutral picture of the pedal.
 type Config struct {
-	Mode     byte
-	Switches [4]Switch
+	Mode byte
+	// Groups is every group read, group 1 first. A model without groups has
+	// exactly one.
+	Groups [][4]Switch
+	// GroupCount is how many groups the pedal steps through; 0 for a model
+	// without groups, or when the read did not reach it. CurrentGroup is the
+	// group the pedal is on, from 0; -1 when not known.
+	GroupCount   int
+	CurrentGroup int
 }
 
 func (c Config) Clone() Config {
 	out := c
-	for s, sw := range c.Switches {
-		out.Switches[s].Flags = append([]byte(nil), sw.Flags...)
-		out.Switches[s].Slots = make([][]Message, len(sw.Slots))
-		for i, slot := range sw.Slots {
-			out.Switches[s].Slots[i] = append([]Message(nil), slot...)
+	out.Groups = make([][4]Switch, len(c.Groups))
+	for g, group := range c.Groups {
+		for s, sw := range group {
+			out.Groups[g][s] = sw
+			out.Groups[g][s].Flags = append([]byte(nil), sw.Flags...)
+			out.Groups[g][s].Slots = make([][]Message, len(sw.Slots))
+			for i, slot := range sw.Slots {
+				out.Groups[g][s].Slots[i] = append([]Message(nil), slot...)
+			}
 		}
 	}
 	return out
@@ -147,8 +158,8 @@ type Device interface {
 	Modes() []byte
 	SlotNames(sw Switch) []string
 	Fields(sw Switch) []Field
-	// Match finds the switch and slot that send this message.
-	Match(cfg Config, got Message) (sw, slot int, ok bool)
+	// Match finds the group, switch and slot that send this message.
+	Match(cfg Config, got Message) (group, sw, slot int, ok bool)
 	// MaxMessages is how many messages a slot can hold; 1 means messages
 	// cannot be added or removed.
 	MaxMessages() int
@@ -243,29 +254,36 @@ func (plusDevice) SlotNames(sw Switch) []string {
 
 func (plusDevice) Decode(img sysex.Image) Config {
 	p := img.DecodePlus()
-	cfg := Config{Mode: p.Mode}
-	for s, sw := range p.Switches {
-		out := Switch{Mode: sw.Mode, Slots: make([][]Message, 2)}
-		for b, bank := range sw.Banks {
-			for _, m := range bank {
-				out.Slots[b] = append(out.Slots[b], Message{m.Type, m.Channel, m.Number, m.Value})
+	cfg := Config{Mode: p.Mode, GroupCount: p.GroupCount, CurrentGroup: p.CurrentGroup}
+	for _, group := range p.Groups {
+		var out [4]Switch
+		for s, sw := range group {
+			out[s] = Switch{Mode: sw.Mode, Slots: make([][]Message, 2)}
+			for b, bank := range sw.Banks {
+				for _, m := range bank {
+					out[s].Slots[b] = append(out[s].Slots[b], Message{m.Type, m.Channel, m.Number, m.Value})
+				}
 			}
 		}
-		cfg.Switches[s] = out
+		cfg.Groups = append(cfg.Groups, out)
 	}
 	return cfg
 }
 
 func (plusDevice) Changes(img sysex.Image, want Config) ([]sysex.Write, error) {
-	p := sysex.PlusConfig{Mode: want.Mode}
-	for s, sw := range want.Switches {
-		p.Switches[s].Mode = sw.Mode
-		for b := 0; b < 2 && b < len(sw.Slots); b++ {
-			for _, m := range sw.Slots[b] {
-				p.Switches[s].Banks[b] = append(p.Switches[s].Banks[b],
-					sysex.PlusMessage{Type: m.Type, Channel: m.Channel, Number: m.Number, Value: m.Value})
+	p := sysex.PlusConfig{Mode: want.Mode, GroupCount: want.GroupCount, CurrentGroup: want.CurrentGroup}
+	for _, group := range want.Groups {
+		var out [4]sysex.PlusSwitch
+		for s, sw := range group {
+			out[s].Mode = sw.Mode
+			for b := 0; b < 2 && b < len(sw.Slots); b++ {
+				for _, m := range sw.Slots[b] {
+					out[s].Banks[b] = append(out[s].Banks[b],
+						sysex.PlusMessage{Type: m.Type, Channel: m.Channel, Number: m.Number, Value: m.Value})
+				}
 			}
 		}
+		p.Groups = append(p.Groups, out)
 	}
 	return img.PlusChanges(p)
 }
@@ -303,21 +321,35 @@ func (plusDevice) MaxMessages() int { return 16 }
 
 // Match compares what arrived with what each switch is set to send. A PC has
 // no value, and a Note Off's velocity is not what identifies it.
-func (plusDevice) Match(cfg Config, got Message) (int, int, bool) {
-	for s, sw := range cfg.Switches {
-		for slot, msgs := range sw.Slots {
-			for _, m := range msgs {
-				if m.Type != got.Type || m.Channel != got.Channel || m.Number != got.Number {
-					continue
+//
+// The group the pedal is on is searched first: E/F change it without telling
+// anyone, and the same message can be set in more than one group.
+func (plusDevice) Match(cfg Config, got Message) (int, int, int, bool) {
+	order := make([]int, 0, len(cfg.Groups))
+	if cfg.CurrentGroup >= 0 && cfg.CurrentGroup < len(cfg.Groups) {
+		order = append(order, cfg.CurrentGroup)
+	}
+	for g := range cfg.Groups {
+		if g != cfg.CurrentGroup {
+			order = append(order, g)
+		}
+	}
+	for _, g := range order {
+		for s, sw := range cfg.Groups[g] {
+			for slot, msgs := range sw.Slots {
+				for _, m := range msgs {
+					if m.Type != got.Type || m.Channel != got.Channel || m.Number != got.Number {
+						continue
+					}
+					if (m.Type == MsgCC || m.Type == MsgNoteOn) && m.Value != got.Value {
+						continue
+					}
+					return g, s, slot, true
 				}
-				if (m.Type == MsgCC || m.Type == MsgNoteOn) && m.Value != got.Value {
-					continue
-				}
-				return s, slot, true
 			}
 		}
 	}
-	return 0, 0, false
+	return 0, 0, 0, false
 }
 
 // --- the original Chocolate, Advanced Custom mode ------------------------------
@@ -377,7 +409,7 @@ func (originalDevice) SlotNames(Switch) []string {
 func origIndex(bank, sw int) int { return bank*4 + sw }
 
 func (originalDevice) Decode(img sysex.Image) Config {
-	cfg := Config{Mode: img[0]}
+	cfg := Config{Mode: img[0], CurrentGroup: -1, Groups: make([][4]Switch, 1)}
 	for s := 0; s < 4; s++ {
 		sw := Switch{Slots: make([][]Message, 4), Flags: make([]byte, 4)}
 		for bank := 0; bank < 4; bank++ {
@@ -385,7 +417,7 @@ func (originalDevice) Decode(img sysex.Image) Config {
 			sw.Slots[bank] = []Message{{Type: MsgCC, Number: img[at]}} // no channel or value stored
 			sw.Flags[bank] = img[at+1]
 		}
-		cfg.Switches[s] = sw
+		cfg.Groups[0][s] = sw
 	}
 	return cfg
 }
@@ -399,7 +431,10 @@ func (originalDevice) Changes(img sysex.Image, want Config) ([]sysex.Write, erro
 				sysex.Write{Addr: addr + origLiveMirror, Old: img[addr], New: v})
 		}
 	}
-	for s, sw := range want.Switches {
+	if len(want.Groups) != 1 {
+		return nil, fmt.Errorf("this model has no groups")
+	}
+	for s, sw := range want.Groups[0] {
 		if len(sw.Slots) != 4 || len(sw.Flags) != 4 {
 			return nil, fmt.Errorf("switch %c: expected four banks", 'A'+s)
 		}
@@ -436,33 +471,41 @@ func (originalDevice) MaxMessages() int { return 1 }
 
 // The original sends a CC on press; match on the number alone, since the
 // value it sends is not part of what is stored.
-func (originalDevice) Match(cfg Config, got Message) (int, int, bool) {
-	if got.Type != MsgCC {
-		return 0, 0, false
+func (originalDevice) Match(cfg Config, got Message) (int, int, int, bool) {
+	if got.Type != MsgCC || len(cfg.Groups) == 0 {
+		return 0, 0, 0, false
 	}
-	for s, sw := range cfg.Switches {
+	for s, sw := range cfg.Groups[0] {
 		for slot, msgs := range sw.Slots {
 			for _, m := range msgs {
 				if m.Number == got.Number {
-					return s, slot, true
+					return 0, s, slot, true
 				}
 			}
 		}
 	}
-	return 0, 0, false
+	return 0, 0, 0, false
 }
 
 // Describe names a Plus configuration byte, for comparing reads.
 func (d plusDevice) Describe(addr int) string {
-	if addr == 0 {
+	switch addr {
+	case 0:
 		return "device mode"
+	case 23639:
+		return "group count - 1"
+	case 23640:
+		return "current group (from 0)"
 	}
 	const base, stride, bank = 93, 417, 80
-	if addr < base || addr >= base+4*stride {
+	if addr < base || addr >= base+4*sysex.PlusGroups*stride {
 		return "not mapped"
 	}
-	s, off := (addr-base)/stride, (addr-base)%stride
-	where := fmt.Sprintf("switch %c", 'A'+s)
+	n, off := (addr-base)/stride, (addr-base)%stride
+	where := fmt.Sprintf("switch %c", 'A'+n%4)
+	if g := n / 4; g > 0 {
+		where = fmt.Sprintf("group %d %s", g+1, where)
+	}
 	if off == 0 {
 		return where + " · mode"
 	}

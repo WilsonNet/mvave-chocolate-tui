@@ -47,17 +47,21 @@ var (
 
 // pedalUI is the pedal screen's own state.
 type pedalUI struct {
-	sel     int  // selected switch, 0..3
-	editing bool // moving between fields of the selected switch
-	field   int  // index into the device's Fields()
-	typed   string
+	sel   int // selected switch, 0..3
+	group int // the group being viewed and edited, from 0 -- not necessarily the pedal's
+	// liveGroup is the group the pedal was last heard sending from; -1 until
+	// a press says. Display only.
+	liveGroup int
+	editing   bool // moving between fields of the selected switch
+	field     int  // index into the device's Fields()
+	typed     string
 
 	draft  *Config // edits not yet written; nil = none
 	expect *Config // what a read after writing must show
 
 	naming bool
 	name   string
-	labels [4]string
+	labels switchLabels
 
 	confirm bool          // showing the write confirmation
 	pending []sysex.Write // what that confirmation would write
@@ -87,14 +91,27 @@ type writeDoneMsg struct {
 
 func labelsPath() string { return filepath.Join(filepath.Dir(configFilePath()), "switch-labels.json") }
 
-func loadLabels() (l [4]string) {
-	if data, err := os.ReadFile(labelsPath()); err == nil {
-		_ = json.Unmarshal(data, &l)
+// switchLabels are names per group and switch: group 2's A is not group
+// 1's A, and naming one must not rename the other.
+type switchLabels [8][4]string
+
+func loadLabels() (l switchLabels) {
+	data, err := os.ReadFile(labelsPath())
+	if err != nil {
+		return l
+	}
+	if json.Unmarshal(data, &l) == nil {
+		return l
+	}
+	// Written before groups: four names, one per switch -- group 1's.
+	var old [4]string
+	if json.Unmarshal(data, &old) == nil {
+		l[0] = old
 	}
 	return l
 }
 
-func saveLabels(l [4]string) {
+func saveLabels(l switchLabels) {
 	if data, err := json.MarshalIndent(l, "", "  "); err == nil {
 		_ = os.MkdirAll(filepath.Dir(labelsPath()), 0o755)
 		_ = os.WriteFile(labelsPath(), data, 0o644)
@@ -109,7 +126,7 @@ func (m *Model) shown() Config {
 	return *m.cfg
 }
 
-func (m *Model) curFields() []Field { return m.device.Fields(m.shown().Switches[m.pui.sel]) }
+func (m *Model) curFields() []Field { return m.device.Fields(m.shown().Groups[m.pui.group][m.pui.sel]) }
 
 func fieldText(f Field, v int) string {
 	if f.Format != nil {
@@ -123,12 +140,12 @@ func (m *Model) setField(f Field, v int) {
 		d := m.cfg.Clone()
 		m.pui.draft = &d
 	}
-	f.Set(&m.pui.draft.Switches[m.pui.sel], v)
+	f.Set(&m.pui.draft.Groups[m.pui.group][m.pui.sel], v)
 }
 
 func (m *Model) nudgeField(delta int) {
 	f := m.curFields()[m.pui.field]
-	cur := f.Get(m.shown().Switches[m.pui.sel])
+	cur := f.Get(m.shown().Groups[m.pui.group][m.pui.sel])
 	if len(f.Choices) > 0 {
 		i := 0
 		for k, c := range f.Choices {
@@ -155,7 +172,7 @@ func (m *Model) handlePedalKey(msg tea.KeyMsg) tea.Cmd {
 	if p.naming {
 		switch k {
 		case "enter":
-			p.labels[p.sel] = strings.TrimSpace(p.name)
+			p.labels[p.group][p.sel] = strings.TrimSpace(p.name)
 			saveLabels(p.labels)
 			p.naming = false
 		case "esc":
@@ -272,7 +289,7 @@ func (m *Model) handlePedalKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "e":
 		p.editing, p.field, p.typed = true, 0, ""
 	case "n":
-		p.naming, p.name = true, p.labels[p.sel]
+		p.naming, p.name = true, p.labels[p.group][p.sel]
 	case "u":
 		p.draft = nil
 		m.statusMsg = "Edits discarded"
@@ -297,6 +314,20 @@ func (m *Model) handlePedalKey(msg tea.KeyMsg) tea.Cmd {
 		} else {
 			m.markForCompare()
 		}
+	case "]", "[":
+		n := len(m.shown().Groups)
+		if k == "]" && p.group < n-1 {
+			p.group++
+		} else if k == "[" && p.group > 0 {
+			p.group--
+		}
+		if n > 1 {
+			m.statusMsg = fmt.Sprintf("Viewing group %d of %d", p.group+1, n)
+		}
+	case "+", "-":
+		m.nudgeGroupCount(map[string]int{"+": 1, "-": -1}[k])
+	case "p":
+		m.pedalToViewedGroup()
 	case "tab":
 		m.logView = !m.logView
 	}
@@ -392,14 +423,27 @@ func (m *Model) notePress(msg Message) {
 		return
 	}
 	stamp := time.Now().Format("15:04:05")
-	if s, slot, ok := m.device.Match(*m.cfg, msg); ok {
-		m.pui.flashAt[s] = time.Now()
-		m.pui.flashSlot[s] = slot
-		name := m.device.SlotNames(m.cfg.Switches[s])[slot]
-		m.pushLive(fmt.Sprintf("%s  %c  %-9s %s", stamp, 'A'+s, name, msg))
+	g, s, slot, ok := m.device.Match(*m.cfg, msg)
+	if !ok {
+		m.pushLive(fmt.Sprintf("%s  ?  %-9s %s", stamp, "", msg))
 		return
 	}
-	m.pushLive(fmt.Sprintf("%s  ?  %-9s %s", stamp, "", msg))
+	// A press tells which group the pedal is on, whatever E/F did since the
+	// last read. Shown, never written: it goes in pui, not in the read config,
+	// or an edit started now would plan a write of the group byte.
+	if m.device.HasGroupKeys() {
+		m.pui.liveGroup = g
+	}
+	if g == m.pui.group {
+		m.pui.flashAt[s] = time.Now()
+		m.pui.flashSlot[s] = slot
+	}
+	where := fmt.Sprintf("%c", 'A'+s)
+	if m.device.HasGroupKeys() {
+		where = fmt.Sprintf("%d%c", g+1, 'A'+s)
+	}
+	name := m.device.SlotNames(m.cfg.Groups[g][s])[slot]
+	m.pushLive(fmt.Sprintf("%s  %-3s %-9s %s", stamp, where, name, msg))
 }
 
 func (m *Model) pushLive(line string) {
@@ -418,7 +462,7 @@ func (m *Model) viewPedal() string {
 	head := pTitle.Render(m.device.Product()) +
 		pMuted.Render("  ·  USB "+m.alsaName()+"  ·  "+m.device.ModeName(cfg.Mode))
 	if m.device.HasGroupKeys() {
-		head += pMuted.Render("  ·  group 1")
+		head += pMuted.Render("  ·  ") + m.groupLine(cfg)
 	}
 	access := pMuted.Render("read-only")
 	if m.allowWrite {
@@ -465,7 +509,7 @@ func (m *Model) alsaName() string {
 
 func (m *Model) drawPedal(cfg Config) string {
 	box := func(s int) string {
-		sw := cfg.Switches[s]
+		sw := cfg.Groups[m.pui.group][s]
 		lit := time.Since(m.pui.flashAt[s]) < flashFor
 		border := pFaint
 		if s == m.pui.sel {
@@ -474,7 +518,7 @@ func (m *Model) drawPedal(cfg Config) string {
 		if lit {
 			border = pAccent
 		}
-		name := m.pui.labels[s]
+		name := m.pui.labels[m.pui.group][s]
 		if m.pui.naming && s == m.pui.sel {
 			name = m.pui.name + "▏"
 		}
@@ -507,12 +551,12 @@ func (m *Model) drawPedal(cfg Config) string {
 // drawDetail draws the selected switch's fields, grouped into their rows.
 func (m *Model) drawDetail(cfg Config) string {
 	p := &m.pui
-	sw := cfg.Switches[p.sel]
-	was := m.cfg.Switches[p.sel]
+	sw := cfg.Groups[p.group][p.sel]
+	was := m.cfg.Groups[p.group][p.sel]
 	fields := m.device.Fields(sw)
 
 	title := fmt.Sprintf("Switch %c", 'A'+p.sel)
-	if l := p.labels[p.sel]; l != "" {
+	if l := p.labels[p.group][p.sel]; l != "" {
 		title += " · " + l
 	}
 	lines := []string{pTitle.Render(title)}
@@ -611,7 +655,11 @@ func (m *Model) pedalHelp() string {
 		}
 		return "↑↓ field · ←→ or −+ change · 0-9 type · enter set · esc done"
 	}
-	return "←→/a-d switch · enter edit · n name · w write · u undo · r read\n" +
+	groups := ""
+	if m.device.HasGroupKeys() {
+		groups = "[ ] group · +/- groups in use · p pedal to this group\n"
+	}
+	return "←→/a-d switch · enter edit · n name · w write · u undo · r read\n" + groups +
 		"m mode · x export · i import · v mark & compare · tab log · q quit"
 }
 
@@ -623,7 +671,7 @@ func (m *Model) addMessage(f Field) {
 	if slot < 0 {
 		slot = 0
 	}
-	sw := m.shown().Switches[m.pui.sel]
+	sw := m.shown().Groups[m.pui.group][m.pui.sel]
 	if m.device.MaxMessages() <= 1 || len(sw.Slots[slot]) >= m.device.MaxMessages() {
 		m.statusMsg = "No room for another message there"
 		return
@@ -636,7 +684,7 @@ func (m *Model) addMessage(f Field) {
 		d := m.cfg.Clone()
 		m.pui.draft = &d
 	}
-	d := &m.pui.draft.Switches[m.pui.sel]
+	d := &m.pui.draft.Groups[m.pui.group][m.pui.sel]
 	d.Slots[slot] = append(d.Slots[slot], msg)
 	m.statusMsg = "Message added — w writes it"
 }
@@ -648,7 +696,7 @@ func (m *Model) removeMessage(f Field) {
 	if slot < 0 {
 		slot = 0
 	}
-	sw := m.shown().Switches[m.pui.sel]
+	sw := m.shown().Groups[m.pui.group][m.pui.sel]
 	if m.device.MaxMessages() <= 1 || len(sw.Slots[slot]) == 0 {
 		m.statusMsg = "Nothing to remove there"
 		return
@@ -657,10 +705,83 @@ func (m *Model) removeMessage(f Field) {
 		d := m.cfg.Clone()
 		m.pui.draft = &d
 	}
-	d := &m.pui.draft.Switches[m.pui.sel]
+	d := &m.pui.draft.Groups[m.pui.group][m.pui.sel]
 	d.Slots[slot] = d.Slots[slot][:len(d.Slots[slot])-1]
 	if fs := m.curFields(); m.pui.field >= len(fs) {
 		m.pui.field = len(fs) - 1
 	}
 	m.statusMsg = "Last message removed — w writes it"
+}
+
+// --- groups ------------------------------------------------------------------
+
+// groupLine is the header's account of groups: which one is on screen, how
+// many the pedal steps through, and which one it is on. An unwritten change
+// to either of the last two is marked.
+func (m *Model) groupLine(cfg Config) string {
+	line := pMuted.Render(fmt.Sprintf("group %d/%d", m.pui.group+1, len(cfg.Groups)))
+	if cfg.GroupCount > 0 {
+		inUse := fmt.Sprintf("%d in use", cfg.GroupCount)
+		if cfg.GroupCount != m.cfg.GroupCount {
+			line += pMuted.Render("  ·  ") + pChanged.Render(inUse)
+		} else {
+			line += pMuted.Render("  ·  " + inUse)
+		}
+	}
+	on := cfg.CurrentGroup
+	if m.pui.liveGroup >= 0 && cfg.CurrentGroup == m.cfg.CurrentGroup {
+		on = m.pui.liveGroup // what the pedal last sent from beats a stale read
+	}
+	if on >= 0 {
+		txt := fmt.Sprintf("pedal on %d", on+1)
+		if cfg.CurrentGroup != m.cfg.CurrentGroup {
+			line += pMuted.Render("  ·  ") + pChanged.Render(txt)
+		} else {
+			line += pMuted.Render("  ·  " + txt)
+		}
+	}
+	return line
+}
+
+func (m *Model) ensureDraft() *Config {
+	if m.pui.draft == nil {
+		d := m.cfg.Clone()
+		m.pui.draft = &d
+	}
+	return m.pui.draft
+}
+
+// nudgeGroupCount changes how many groups E/F step through.
+func (m *Model) nudgeGroupCount(delta int) {
+	if !m.device.HasGroupKeys() || m.cfg.GroupCount == 0 {
+		m.statusMsg = "The group count has not been read"
+		return
+	}
+	d := m.ensureDraft()
+	n := d.GroupCount + delta
+	if n < 1 || n > len(d.Groups) {
+		m.statusMsg = fmt.Sprintf("Groups in use: 1-%d", len(d.Groups))
+		return
+	}
+	d.GroupCount = n
+	if d.CurrentGroup >= n {
+		m.statusMsg = fmt.Sprintf("%d groups in use — but the pedal is on group %d; p to move it first", n, d.CurrentGroup+1)
+		return
+	}
+	m.statusMsg = fmt.Sprintf("%d groups in use — w writes it", n)
+}
+
+// pedalToViewedGroup makes the group on screen the one the pedal is on.
+func (m *Model) pedalToViewedGroup() {
+	if !m.device.HasGroupKeys() || m.cfg.CurrentGroup < 0 {
+		m.statusMsg = "The pedal's current group has not been read"
+		return
+	}
+	d := m.ensureDraft()
+	if m.pui.group >= d.GroupCount {
+		m.statusMsg = fmt.Sprintf("Group %d is beyond the %d in use; + first", m.pui.group+1, d.GroupCount)
+		return
+	}
+	d.CurrentGroup = m.pui.group
+	m.statusMsg = fmt.Sprintf("Pedal to group %d — w writes it", m.pui.group+1)
 }

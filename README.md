@@ -76,10 +76,15 @@ detail, and presses as they happen, each traced to the switch that sent it.
 | `x` / `i` | Back up every byte read / restore a backup as edits |
 | `v` then `r` | Mark this read; the next read lists every byte that changed, and what it is |
 | `m` | Change the operating mode (needs `--write`; read back to verify) |
+| `[` / `]` | View the previous / next group (Plus) |
+| `+` / `-` | Change how many groups E/F step through (Plus; written with `w`) |
+| `p` | Put the pedal on the group being viewed (Plus; written with `w`) |
 | `r` | Read again |
 
-- **Chocolate Plus** -- checked against a real pedal. Group 1 only for now:
-  groups 2–8 and the group count live outside the two reads.
+- **Chocolate Plus** -- checked against a real pedal. The whole configuration
+  is read with the official app's own 24 read requests: all eight groups, the
+  group count and the group the pedal is on. Groups were mapped from the
+  official app's USB traffic.
 - **Original Chocolate, Advanced Custom mode** -- built from this TUI's own
   decoder and writer and **not yet checked on hardware**; the screen says so.
   Reports welcome. Other modes keep the table above.

@@ -37,7 +37,7 @@ var PlusTypeNames = map[byte]string{
 	PlusPC: "PC", PlusCC: "CC", PlusNoteOn: "Note On", PlusNoteOff: "Note Off", PlusSysEx: "SysEx",
 }
 
-// PlusSwitch is one footswitch in the current group.
+// PlusSwitch is one footswitch in one group.
 type PlusSwitch struct {
 	Mode  byte             // see PlusSwitchModeNames
 	Banks [2][]PlusMessage // Bank A, Bank B
@@ -45,8 +45,15 @@ type PlusSwitch struct {
 
 // PlusConfig is what a read of the Plus decodes to.
 type PlusConfig struct {
-	Mode     byte // device mode, an index into PlusModeNames
-	Switches [4]PlusSwitch
+	Mode byte // device mode, an index into PlusModeNames
+	// Groups holds every group the read covered, in order: just group 1 from
+	// a partial read, all eight from a full one.
+	Groups [][4]PlusSwitch
+	// GroupCount is how many groups E/F step through (1-8); 0 if the read did
+	// not reach it. CurrentGroup is the group the pedal is on now, counted
+	// from 0; -1 if not read.
+	GroupCount   int
+	CurrentGroup int
 }
 
 // The official app's mode list, in order; the stored value is the index.
@@ -76,29 +83,36 @@ var PlusSwitchModesChecked = []byte{0, 1, 2, 3, 4}
 
 // The layout, mapped on a real pedal:
 //
-//	93 + 417*s          switch s's mode
+//	93 + 417*(4g + s)   switch s of group g (both from 0): its mode
 //	  + 1 + 80*b        bank b: sixteen 5-byte messages
 //	      + 5*i         [in use, channel-1, type, number, value]
+//	23639               group count - 1
+//	23640               current group (from 0) -- writing it switches the pedal
 //
 // Adding a message in the official app set only its "in use" byte (to 1;
 // the rest was already 0: channel 1, PC 0, value 0 -- the app's default).
-// The device refuses writes into a slot that is not in use.
+// The device refuses writes into a slot that is not in use. The groups and
+// the two group bytes were mapped from the official app's own USB traffic.
 const (
+	PlusGroups       = 8
 	plusSwitchBase   = 93
 	plusSwitchStride = 417
 	plusBankStride   = 80
 	plusMsgSize      = 5
 	plusMaxMessages  = plusBankStride / plusMsgSize // 16
+	plusGroupCountAt = 23639
+	plusCurrentAt    = 23640
 )
 
-func plusMsgAt(s, bank, i int) int {
-	return plusSwitchBase + s*plusSwitchStride + 1 + bank*plusBankStride + i*plusMsgSize
+func plusSwitchAt(g, s int) int { return plusSwitchBase + (4*g+s)*plusSwitchStride }
+
+func plusMsgAt(g, s, bank, i int) int {
+	return plusSwitchAt(g, s) + 1 + bank*plusBankStride + i*plusMsgSize
 }
 
-// PlusComplete reports whether every byte a Plus's four switches need has arrived.
-func (img Image) PlusComplete() bool {
-	last := plusMsgAt(3, 1, plusMaxMessages) - 1
-	for a := 0; a <= last; a++ {
+// plusGroupRead reports whether every byte of group g has arrived.
+func (img Image) plusGroupRead(g int) bool {
+	for a := plusSwitchAt(g, 0); a < plusSwitchAt(g, 3)+plusSwitchStride; a++ {
 		if _, ok := img[a]; !ok {
 			return false
 		}
@@ -106,51 +120,60 @@ func (img Image) PlusComplete() bool {
 	return true
 }
 
+// PlusComplete reports whether group 1 -- what the screen needs at least --
+// has arrived.
+func (img Image) PlusComplete() bool { return img.plusGroupRead(0) }
+
 // plusBank reads one bank: the run of in-use messages from slot 0, and
 // whether any slot after that run is in use too (a gap the official app
 // does not make, and this tool will not edit around).
-func (img Image) plusBank(s, bank int) (msgs []PlusMessage, gap bool) {
+func (img Image) plusBank(g, s, bank int) (msgs []PlusMessage, gap bool) {
 	i := 0
-	for ; i < plusMaxMessages && img[plusMsgAt(s, bank, i)] == 1; i++ {
-		at := plusMsgAt(s, bank, i)
+	for ; i < plusMaxMessages && img[plusMsgAt(g, s, bank, i)] == 1; i++ {
+		at := plusMsgAt(g, s, bank, i)
 		msgs = append(msgs, PlusMessage{
 			Channel: img[at+1] + 1, Type: img[at+2], Number: img[at+3], Value: img[at+4],
 		})
 	}
 	for ; i < plusMaxMessages; i++ {
-		if img[plusMsgAt(s, bank, i)] != 0 {
+		if img[plusMsgAt(g, s, bank, i)] != 0 {
 			gap = true
 		}
 	}
 	return msgs, gap
 }
 
-// LooksLikePlus checks the SHAPE of the data, not its values: every switch
-// has a known mode, every "in use" byte is 0 or 1, every message in use a
-// real channel and type, and at least one message is in use. An original
-// Chocolate has no switch blocks at these addresses, so it fails; a Plus
-// whose settings differ from the one this was mapped on still passes.
+// LooksLikePlus checks the SHAPE of the data, not its values: in every group
+// read, each switch has a known mode, every "in use" byte is 0 or 1, every
+// message in use a real channel and type -- and group 1 uses at least one
+// message. An original Chocolate has no switch blocks at these addresses, so
+// it fails; a Plus whose settings differ from the one this was mapped on
+// still passes.
 func (img Image) LooksLikePlus() bool {
 	if !img.PlusComplete() {
 		return false
 	}
 	used := 0
-	for s := 0; s < 4; s++ {
-		if _, ok := PlusSwitchModeNames[img[plusSwitchBase+s*plusSwitchStride]]; !ok {
-			return false
-		}
-		for bank := 0; bank < 2; bank++ {
-			for i := 0; i < plusMaxMessages; i++ {
-				at := plusMsgAt(s, bank, i)
-				switch img[at] {
-				case 0:
-				case 1:
-					if img[at+1] > 15 || img[at+2] > PlusSysEx {
+	for g := 0; g < PlusGroups && img.plusGroupRead(g); g++ {
+		for s := 0; s < 4; s++ {
+			if _, ok := PlusSwitchModeNames[img[plusSwitchAt(g, s)]]; !ok {
+				return false
+			}
+			for bank := 0; bank < 2; bank++ {
+				for i := 0; i < plusMaxMessages; i++ {
+					at := plusMsgAt(g, s, bank, i)
+					switch img[at] {
+					case 0:
+					case 1:
+						if img[at+1] > 15 || img[at+2] > PlusSysEx {
+							return false
+						}
+						if g == 0 {
+							used++
+						}
+					default:
 						return false
 					}
-					used++
-				default:
-					return false
 				}
 			}
 		}
@@ -158,15 +181,25 @@ func (img Image) LooksLikePlus() bool {
 	return used > 0
 }
 
-// DecodePlus reads the device mode and the four switches out of a complete image.
+// DecodePlus reads the device mode, every group the read covered, and the
+// group count and current group if it reached them.
 func (img Image) DecodePlus() PlusConfig {
-	cfg := PlusConfig{Mode: img[0]}
-	for s := 0; s < 4; s++ {
-		sw := PlusSwitch{Mode: img[plusSwitchBase+s*plusSwitchStride]}
-		for bank := 0; bank < 2; bank++ {
-			sw.Banks[bank], _ = img.plusBank(s, bank)
+	cfg := PlusConfig{Mode: img[0], CurrentGroup: -1}
+	for g := 0; g < PlusGroups && img.plusGroupRead(g); g++ {
+		var group [4]PlusSwitch
+		for s := 0; s < 4; s++ {
+			group[s].Mode = img[plusSwitchAt(g, s)]
+			for bank := 0; bank < 2; bank++ {
+				group[s].Banks[bank], _ = img.plusBank(g, s, bank)
+			}
 		}
-		cfg.Switches[s] = sw
+		cfg.Groups = append(cfg.Groups, group)
+	}
+	if v, ok := img[plusGroupCountAt]; ok {
+		cfg.GroupCount = int(v) + 1
+	}
+	if v, ok := img[plusCurrentAt]; ok {
+		cfg.CurrentGroup = int(v)
 	}
 	return cfg
 }
@@ -177,7 +210,8 @@ func (img Image) DecodePlus() PlusConfig {
 //   - a new message's "in use" byte before its fields, since the device
 //     refuses writes into a slot that is not in use;
 //   - a removed message's fields cleared before its "in use" byte, so the
-//     slot ends exactly as a never-used one.
+//     slot ends exactly as a never-used one;
+//   - the group count, then the current group, last.
 //
 // Messages are added and removed at the end of a bank only, keeping the
 // unbroken run the official app keeps. SysEx is refused.
@@ -186,6 +220,9 @@ func (img Image) PlusChanges(want PlusConfig) ([]Write, error) {
 		return nil, fmt.Errorf("the pedal has not been read completely")
 	}
 	have := img.DecodePlus()
+	if len(want.Groups) != len(have.Groups) {
+		return nil, fmt.Errorf("%d groups read, %d to write", len(have.Groups), len(want.Groups))
+	}
 	var out []Write
 	cur := map[int]byte{} // what the device will hold once `out` is sent
 	get := func(addr int) byte {
@@ -200,50 +237,77 @@ func (img Image) PlusChanges(want PlusConfig) ([]Write, error) {
 			cur[addr] = v
 		}
 	}
-	for s := 0; s < 4; s++ {
-		w := want.Switches[s]
-		if w.Mode != have.Switches[s].Mode {
-			checked := false
-			for _, ok := range PlusSwitchModesChecked {
-				checked = checked || ok == w.Mode
+	for g := range want.Groups {
+		where := func(s int) string {
+			if len(want.Groups) > 1 {
+				return fmt.Sprintf("group %d switch %c", g+1, 'A'+s)
 			}
-			if !checked {
-				return nil, fmt.Errorf("switch %c: mode %d is not a known switch mode", 'A'+s, w.Mode)
-			}
-			set(plusSwitchBase+s*plusSwitchStride, w.Mode)
+			return fmt.Sprintf("switch %c", 'A'+s)
 		}
-		for bank := 0; bank < 2; bank++ {
-			if _, gap := img.plusBank(s, bank); gap {
-				return nil, fmt.Errorf("switch %c bank %c has a gap between its messages; edit it in the official app",
-					'A'+s, 'A'+bank)
-			}
-			if len(w.Banks[bank]) > plusMaxMessages {
-				return nil, fmt.Errorf("switch %c bank %c: at most %d messages", 'A'+s, 'A'+bank, plusMaxMessages)
-			}
-			for i, m := range w.Banks[bank] {
-				if m.Channel < 1 || m.Channel > 16 || m.Number > 0x7F || m.Value > 0x7F {
-					return nil, fmt.Errorf("switch %c bank %c message %d: out of range (%+v)", 'A'+s, 'A'+bank, i+1, m)
+		for s := 0; s < 4; s++ {
+			w := want.Groups[g][s]
+			if w.Mode != have.Groups[g][s].Mode {
+				checked := false
+				for _, ok := range PlusSwitchModesChecked {
+					checked = checked || ok == w.Mode
 				}
-				if m.Type > PlusNoteOff {
-					return nil, fmt.Errorf("switch %c bank %c message %d: %s is not supported",
-						'A'+s, 'A'+bank, i+1, PlusTypeNames[m.Type])
+				if !checked {
+					return nil, fmt.Errorf("%s: mode %d is not a known switch mode", where(s), w.Mode)
 				}
-				at := plusMsgAt(s, bank, i)
-				set(at, 1) // in use -- first, or the field writes are refused
-				set(at+1, m.Channel-1)
-				set(at+2, m.Type)
-				set(at+3, m.Number)
-				set(at+4, m.Value)
+				set(plusSwitchAt(g, s), w.Mode)
 			}
-			// Messages removed from the end: last first, fields before flag.
-			for i := len(have.Switches[s].Banks[bank]) - 1; i >= len(w.Banks[bank]); i-- {
-				at := plusMsgAt(s, bank, i)
-				for k := 4; k >= 1; k-- {
-					set(at+k, 0)
+			for bank := 0; bank < 2; bank++ {
+				if _, gap := img.plusBank(g, s, bank); gap {
+					return nil, fmt.Errorf("%s bank %c has a gap between its messages; edit it in the official app",
+						where(s), 'A'+bank)
 				}
-				set(at, 0)
+				if len(w.Banks[bank]) > plusMaxMessages {
+					return nil, fmt.Errorf("%s bank %c: at most %d messages", where(s), 'A'+bank, plusMaxMessages)
+				}
+				for i, m := range w.Banks[bank] {
+					if m.Channel < 1 || m.Channel > 16 || m.Number > 0x7F || m.Value > 0x7F {
+						return nil, fmt.Errorf("%s bank %c message %d: out of range (%+v)", where(s), 'A'+bank, i+1, m)
+					}
+					if m.Type > PlusNoteOff {
+						return nil, fmt.Errorf("%s bank %c message %d: %s is not supported",
+							where(s), 'A'+bank, i+1, PlusTypeNames[m.Type])
+					}
+					at := plusMsgAt(g, s, bank, i)
+					set(at, 1) // in use -- first, or the field writes are refused
+					set(at+1, m.Channel-1)
+					set(at+2, m.Type)
+					set(at+3, m.Number)
+					set(at+4, m.Value)
+				}
+				// Messages removed from the end: last first, fields before flag.
+				for i := len(have.Groups[g][s].Banks[bank]) - 1; i >= len(w.Banks[bank]); i-- {
+					at := plusMsgAt(g, s, bank, i)
+					for k := 4; k >= 1; k-- {
+						set(at+k, 0)
+					}
+					set(at, 0)
+				}
 			}
 		}
+	}
+	if want.GroupCount != have.GroupCount {
+		if have.GroupCount == 0 {
+			return nil, fmt.Errorf("the group count was not read")
+		}
+		if want.GroupCount < 1 || want.GroupCount > PlusGroups {
+			return nil, fmt.Errorf("group count %d: must be 1-%d", want.GroupCount, PlusGroups)
+		}
+		set(plusGroupCountAt, byte(want.GroupCount-1))
+	}
+	if want.CurrentGroup != have.CurrentGroup {
+		if have.CurrentGroup < 0 {
+			return nil, fmt.Errorf("the current group was not read")
+		}
+		count := want.GroupCount
+		if want.CurrentGroup < 0 || want.CurrentGroup >= count {
+			return nil, fmt.Errorf("group %d is beyond the %d groups in use", want.CurrentGroup+1, count)
+		}
+		set(plusCurrentAt, byte(want.CurrentGroup))
 	}
 	return out, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func plusModel(t *testing.T) *Model {
 	t.Helper()
 	m := NewModel("/dev/null")
 	m.width, m.height = 100, 40
-	m.pui.labels = [4]string{}
+	m.pui.labels = switchLabels{}
 	m.pedalImage = sysex.Image{}
 	for _, name := range []string{"plus-read1.syx", "plus-read2.syx"} {
 		frame, err := os.ReadFile("internal/sysex/testdata/" + name)
@@ -59,10 +60,10 @@ func TestEditingStagesOnlyTheChangedByte(t *testing.T) {
 	m.allowWrite = true
 	editABankBValueTo4(m)
 
-	if m.pui.draft == nil || m.pui.draft.Switches[0].Slots[1][0].Value != 4 {
+	if m.pui.draft == nil || m.pui.draft.Groups[0][0].Slots[1][0].Value != 4 {
 		t.Fatalf("draft not edited: %+v", m.pui.draft)
 	}
-	if m.cfg.Switches[0].Slots[1][0].Value != 1 {
+	if m.cfg.Groups[0][0].Slots[1][0].Value != 1 {
 		t.Fatal("editing changed the read configuration itself")
 	}
 	keys(m, "w")
@@ -102,11 +103,11 @@ func TestUndoDropsTheDraft(t *testing.T) {
 func TestSwitchModeCyclesThroughAllFive(t *testing.T) {
 	m := plusModel(t)
 	keys(m, "a", "enter", "+", "esc")
-	if got := m.pui.draft.Switches[0].Mode; got != 2 {
+	if got := m.pui.draft.Groups[0][0].Mode; got != 2 {
 		t.Fatalf("mode after + is %d, want 2 (press / release)", got)
 	}
 	keys(m, "enter", "-", "-", "esc")
-	if got := m.pui.draft.Switches[0].Mode; got != 0 {
+	if got := m.pui.draft.Groups[0][0].Mode; got != 0 {
 		t.Fatalf("mode after two - is %d, want 0 (single tap)", got)
 	}
 }
@@ -142,7 +143,7 @@ func TestAReadBackThatDiffersIsReported(t *testing.T) {
 	m := plusModel(t)
 	w := m.cfg.Clone()
 	want := &w
-	want.Switches[0].Slots[1][0].Value = 4 // the pedal still says 1
+	want.Groups[0][0].Slots[1][0].Value = 4 // the pedal still says 1
 	m.pui.expect, m.pui.draft, m.pui.writing = want, want, true
 	m.notePedalRead()
 	if !strings.Contains(m.statusMsg, "does not match") || m.pui.draft == nil {
@@ -166,10 +167,10 @@ func TestNamesAreKept(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := plusModel(t)
 	keys(m, "d", "n", "N", "e", "x", "t", "enter")
-	if m.pui.labels[3] != "Next" {
-		t.Fatalf("label %q", m.pui.labels[3])
+	if m.pui.labels[0][3] != "Next" {
+		t.Fatalf("label %q", m.pui.labels[0][3])
 	}
-	if got := loadLabels()[3]; got != "Next" {
+	if got := loadLabels()[0][3]; got != "Next" {
 		t.Errorf("not saved: %q", got)
 	}
 }
@@ -203,10 +204,10 @@ func TestTheOriginalIsRecognisedOnlyInAdvancedCustom(t *testing.T) {
 func TestTheOriginalDecodesBanksPerSwitch(t *testing.T) {
 	cfg := originalDevice{}.Decode(originalAdvancedImage())
 	// Switch B (s=1), bank 3 (b=2): slot 4*2+1 = 9 -> CC 29, latching (odd).
-	if got := cfg.Switches[1].Slots[2][0].Number; got != 29 {
+	if got := cfg.Groups[0][1].Slots[2][0].Number; got != 29 {
 		t.Errorf("B bank 3 CC = %d, want 29", got)
 	}
-	if got := cfg.Switches[1].Flags[2]; got != 1 {
+	if got := cfg.Groups[0][1].Flags[2]; got != 1 {
 		t.Errorf("B bank 3 latching = %d, want 1", got)
 	}
 }
@@ -217,7 +218,7 @@ func TestTheOriginalWritesBothCopies(t *testing.T) {
 	img := originalAdvancedImage()
 	d := originalDevice{}
 	want := d.Decode(img)
-	want.Switches[0].Slots[0][0].Number = 99 // A bank 1: slot 0 at 0x30
+	want.Groups[0][0].Slots[0][0].Number = 99 // A bank 1: slot 0 at 0x30
 	ch, err := d.Changes(img, want)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +263,7 @@ func TestABackupRestoresAsEditsAndWritesOnlyTheDifference(t *testing.T) {
 		t.Fatalf("picker: picking=%v files=%v", m.pui.picking, m.pui.files)
 	}
 	keys(m, "enter")
-	if m.pui.draft == nil || m.pui.draft.Switches[0].Slots[1][0].Value != 1 {
+	if m.pui.draft == nil || m.pui.draft.Groups[0][0].Slots[1][0].Value != 1 {
 		t.Fatalf("backup not loaded as edits: %s", m.statusMsg)
 	}
 	keys(m, "w")
@@ -468,7 +469,7 @@ func TestAddingAMessageThroughTheScreen(t *testing.T) {
 	m := plusModel(t)
 	m.allowWrite = true
 	keys(m, "a", "enter", "down", "n", "esc") // cursor on bank A's channel
-	if got := len(m.pui.draft.Switches[0].Slots[0]); got != 2 {
+	if got := len(m.pui.draft.Groups[0][0].Slots[0]); got != 2 {
 		t.Fatalf("bank A holds %d messages, want 2", got)
 	}
 	keys(m, "w")
@@ -482,7 +483,7 @@ func TestRemovingAMessageThroughTheScreen(t *testing.T) {
 	m := plusModel(t)
 	m.allowWrite = true
 	keys(m, "a", "enter", "down", "x", "esc")
-	if got := len(m.pui.draft.Switches[0].Slots[0]); got != 0 {
+	if got := len(m.pui.draft.Groups[0][0].Slots[0]); got != 0 {
 		t.Fatalf("bank A holds %d messages, want 0", got)
 	}
 	keys(m, "w")
@@ -495,7 +496,7 @@ func TestRemovingAMessageThroughTheScreen(t *testing.T) {
 func TestChangingAMessageType(t *testing.T) {
 	m := plusModel(t)
 	keys(m, "a", "enter", "down", "down", "-", "esc") // CC -> PC
-	if got := m.pui.draft.Switches[0].Slots[0][0].Type; got != MsgPC {
+	if got := m.pui.draft.Groups[0][0].Slots[0][0].Type; got != MsgPC {
 		t.Fatalf("type %d, want PC", got)
 	}
 	if !strings.Contains(m.drawDetail(m.shown()), "PC") {
@@ -506,7 +507,7 @@ func TestChangingAMessageType(t *testing.T) {
 func TestAProgramChangePressIsTraced(t *testing.T) {
 	m := plusModel(t)
 	c := m.cfg.Clone()
-	c.Switches[2].Slots[0][0] = Message{Type: MsgPC, Channel: 1, Number: 5}
+	c.Groups[0][2].Slots[0][0] = Message{Type: MsgPC, Channel: 1, Number: 5}
 	m.cfg = &c
 	m.parseMidiBytes([]byte{0xC0, 5})
 	if !strings.Contains(m.drawLive(), "C  1st press ch1 PC5") {
@@ -522,5 +523,123 @@ func TestANewMessageDrawsAsNew(t *testing.T) {
 	out := m.drawDetail(m.shown())
 	if !strings.Contains(out, "(new)") {
 		t.Errorf("detail:\n%s", out)
+	}
+}
+
+// fullModel is a Model that has read all eight groups of a real Chocolate
+// Plus (the official app's full read, recorded from its USB traffic): two
+// groups in use, the pedal on group 1, group 2 the app's defaults with switch
+// A set to PC 1.
+func fullModel(t *testing.T) *Model {
+	t.Helper()
+	data, err := os.ReadFile("internal/sysex/testdata/plus-full.syx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewModel("/dev/null")
+	m.width, m.height = 110, 50
+	m.pui.labels = switchLabels{}
+	m.pedalImage = sysex.Image{}
+	m.parseMidiBytes(data)
+	if m.cfg == nil || len(m.cfg.Groups) != 8 {
+		t.Fatalf("full read not decoded: %v", m.statusMsg)
+	}
+	return &m
+}
+
+func TestPagingToGroup2ShowsItsSwitches(t *testing.T) {
+	m := fullModel(t)
+	if !strings.Contains(m.groupLine(*m.cfg), "group 1/8") || !strings.Contains(m.groupLine(*m.cfg), "2 in use") ||
+		!strings.Contains(m.groupLine(*m.cfg), "pedal on 1") {
+		t.Errorf("header: %q", m.groupLine(*m.cfg))
+	}
+	keys(m, "]")
+	if m.pui.group != 1 {
+		t.Fatalf("viewing group %d", m.pui.group+1)
+	}
+	if out := m.drawDetail(m.shown()); !strings.Contains(out, "single tap") || !strings.Contains(out, "PC") {
+		t.Errorf("group 2 detail:\n%s", out)
+	}
+	keys(m, "[", "[")
+	if m.pui.group != 0 {
+		t.Errorf("[ went below group 1: %d", m.pui.group)
+	}
+}
+
+func TestEditingGroup2WritesOnlyThere(t *testing.T) {
+	m := fullModel(t)
+	m.allowWrite = true
+	keys(m, "]", "a", "enter", "+", "esc") // switch A of group 2: single tap -> single step
+	keys(m, "w")
+	if !m.pui.confirm || len(m.pui.pending) != 1 || m.pui.pending[0] != (sysex.Write{Addr: 1761, Old: 0, New: 1}) {
+		t.Fatalf("pending %+v; want one write, at 1761", m.pui.pending)
+	}
+}
+
+func TestGroupCountAndPedalGroupGoThroughWrite(t *testing.T) {
+	m := fullModel(t)
+	m.allowWrite = true
+	keys(m, "+")
+	if m.pui.draft.GroupCount != 3 || !strings.Contains(m.groupLine(m.shown()), "3 in use") {
+		t.Fatalf("count %d, header %q", m.pui.draft.GroupCount, m.groupLine(m.shown()))
+	}
+	keys(m, "]", "p")
+	if m.pui.draft.CurrentGroup != 1 {
+		t.Fatalf("pedal group %d", m.pui.draft.CurrentGroup+1)
+	}
+	keys(m, "w")
+	want := []sysex.Write{{Addr: 23639, Old: 1, New: 2}, {Addr: 23640, Old: 0, New: 1}}
+	if len(m.pui.pending) != 2 || m.pui.pending[0] != want[0] || m.pui.pending[1] != want[1] {
+		t.Errorf("pending %+v; want %+v", m.pui.pending, want)
+	}
+}
+
+func TestTheGroupCountStaysWithinWhatExists(t *testing.T) {
+	m := fullModel(t)
+	keys(m, "-")
+	if m.pui.draft.GroupCount != 1 {
+		t.Fatalf("count %d", m.pui.draft.GroupCount)
+	}
+	keys(m, "-")
+	if m.pui.draft.GroupCount != 1 {
+		t.Errorf("went below one group: %d", m.pui.draft.GroupCount)
+	}
+	keys(m, "]", "p") // group 2 is beyond the one group now in use
+	if m.pui.draft.CurrentGroup != 0 {
+		t.Errorf("pedal moved to a group beyond the count: %d", m.pui.draft.CurrentGroup+1)
+	}
+}
+
+// A press from a group the screen is not showing still names its group, and
+// the header follows the pedal there -- without touching the read config.
+func TestAPressFromAnotherGroupIsTraced(t *testing.T) {
+	m := fullModel(t)
+	m.parseMidiBytes([]byte{0xC0, 1}) // group 2 switch A: PC 1, channel 1
+	if !strings.Contains(m.drawLive(), "2A") {
+		t.Errorf("live:\n%s", m.drawLive())
+	}
+	if !strings.Contains(m.groupLine(*m.cfg), "pedal on 2") || m.cfg.CurrentGroup != 0 {
+		t.Errorf("header %q, read current group %d", m.groupLine(*m.cfg), m.cfg.CurrentGroup)
+	}
+}
+
+// Naming group 2's A must not rename group 1's A -- the stage preset.
+func TestNamesBelongToTheirGroup(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := fullModel(t)
+	keys(m, "]", "a", "n", "P", "l", "a", "y", "enter")
+	if m.pui.labels[1][0] != "Play" || m.pui.labels[0][0] != "" {
+		t.Errorf("labels group 1 A %q, group 2 A %q", m.pui.labels[0][0], m.pui.labels[1][0])
+	}
+}
+
+// Names saved before groups were four, one per switch; they become group 1's.
+func TestOldNamesBecomeGroup1s(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_ = os.MkdirAll(filepath.Dir(labelsPath()), 0o755)
+	_ = os.WriteFile(labelsPath(), []byte(`["Clean","Drive","Fuzz","Next"]`), 0o644)
+	l := loadLabels()
+	if l[0] != [4]string{"Clean", "Drive", "Fuzz", "Next"} || l[1] != [4]string{} {
+		t.Errorf("loaded %v", l)
 	}
 }

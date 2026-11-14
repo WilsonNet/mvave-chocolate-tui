@@ -71,7 +71,7 @@ func TestPlusDecodesTheKnownConfiguration(t *testing.T) {
 		{Mode: 4, Banks: [2][]PlusMessage{{cc(1, 5, 127)}, {cc(1, 6, 127)}}},
 	}
 	for s, w := range want {
-		got := cfg.Switches[s]
+		got := cfg.Groups[0][s]
 		if got.Mode != w.Mode {
 			t.Errorf("switch %c: mode %d, want %d", 'A'+s, got.Mode, w.Mode)
 		}
@@ -173,7 +173,7 @@ func TestChangesWritesOnlyWhatDiffers(t *testing.T) {
 		t.Fatalf("no edits should mean no writes; got %v, %v", ch, err)
 	}
 	// The exact change made on the real pedal: A's Bank B value 1 -> 4.
-	want.Switches[0].Banks[1][0].Value = 4
+	want.Groups[0][0].Banks[1][0].Value = 4
 	ch, err := img.PlusChanges(want)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestChangesWritesOnlyWhatDiffers(t *testing.T) {
 func TestAddingAMessageWritesItsFlagFirst(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
 	want := img.DecodePlus()
-	want.Switches[0].Banks[0] = append(want.Switches[0].Banks[0],
+	want.Groups[0][0].Banks[0] = append(want.Groups[0][0].Banks[0],
 		PlusMessage{Type: PlusCC, Channel: 2, Number: 64, Value: 127})
 	ch, err := img.PlusChanges(want)
 	if err != nil {
@@ -213,10 +213,10 @@ func TestRemovingTheLastMessageClearsFieldsThenFlag(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
 	img[99], img[100], img[101], img[102], img[103] = 1, 1, PlusCC, 64, 127 // a second message
 	want := img.DecodePlus()
-	if len(want.Switches[0].Banks[0]) != 2 {
+	if len(want.Groups[0][0].Banks[0]) != 2 {
 		t.Fatalf("the second message was not decoded")
 	}
-	want.Switches[0].Banks[0] = want.Switches[0].Banks[0][:1]
+	want.Groups[0][0].Banks[0] = want.Groups[0][0].Banks[0][:1]
 	ch, err := img.PlusChanges(want)
 	if err != nil {
 		t.Fatal(err)
@@ -230,17 +230,17 @@ func TestPlusChangesRefusesWhatItCannotDo(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
 
 	mode := img.DecodePlus()
-	mode.Switches[1].Mode = 9
+	mode.Groups[0][1].Mode = 9
 	if _, err := img.PlusChanges(mode); err == nil {
 		t.Error("an unknown switch mode was allowed")
 	}
 	ch0 := img.DecodePlus()
-	ch0.Switches[2].Banks[0][0].Channel = 0
+	ch0.Groups[0][2].Banks[0][0].Channel = 0
 	if _, err := img.PlusChanges(ch0); err == nil {
 		t.Error("channel 0 was allowed")
 	}
 	sysex := img.DecodePlus()
-	sysex.Switches[2].Banks[0][0].Type = PlusSysEx
+	sysex.Groups[0][2].Banks[0][0].Type = PlusSysEx
 	if _, err := img.PlusChanges(sysex); err == nil {
 		t.Error("SysEx (unmapped) was allowed")
 	}
@@ -262,7 +262,7 @@ func TestTheMappedMessageEncoding(t *testing.T) {
 		{1, PlusPC, 0, 0}, {2, PlusCC, 1, 1}, {1, PlusNoteOn, 0, 2}, {1, PlusNoteOff, 0, 3},
 	} {
 		want := img.DecodePlus()
-		want.Switches[0].Banks[0][0].Channel, want.Switches[0].Banks[0][0].Type = tc.ch, tc.typ
+		want.Groups[0][0].Banks[0][0].Channel, want.Groups[0][0].Banks[0][0].Type = tc.ch, tc.typ
 		ch, err := img.PlusChanges(want)
 		if err != nil {
 			t.Fatal(err)
@@ -295,7 +295,7 @@ func TestEverySwitchModeIsWritable(t *testing.T) {
 	img := loadImage(t, "plus-read1.syx", "plus-read2.syx")
 	for mode := byte(0); mode <= 4; mode++ {
 		want := img.DecodePlus()
-		want.Switches[0].Mode = mode
+		want.Groups[0][0].Mode = mode
 		ch, err := img.PlusChanges(want)
 		if err != nil {
 			t.Errorf("mode %d: %v", mode, err)
@@ -303,5 +303,122 @@ func TestEverySwitchModeIsWritable(t *testing.T) {
 		if mode != 1 && (len(ch) != 1 || ch[0].Addr != 93 || ch[0].New != mode) {
 			t.Errorf("mode %d: writes %+v; want one, at 93", mode, ch)
 		}
+	}
+}
+
+// loadFull reads plus-full.syx: the 24 replies a real Chocolate Plus gave the
+// official app's full read (recorded from its USB traffic), concatenated.
+func loadFull(t *testing.T) Image {
+	t.Helper()
+	data, err := os.ReadFile("testdata/plus-full.syx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := Image{}
+	n := 0
+	for _, f := range FindSysExFrames(data, []byte{0xF0, 0x00, 0x32, 0x0D}) {
+		if img.Add(f) {
+			n++
+		}
+	}
+	if n != 24 {
+		t.Fatalf("%d replies decoded, want 24", n)
+	}
+	return img
+}
+
+func TestTheFullReadCoversEveryGroup(t *testing.T) {
+	img := loadFull(t)
+	if len(img) != ConfigEnd {
+		t.Errorf("%d bytes read, want %d (0..%d)", len(img), ConfigEnd, ConfigEnd-1)
+	}
+	cfg := img.DecodePlus()
+	if len(cfg.Groups) != PlusGroups {
+		t.Fatalf("%d groups, want %d", len(cfg.Groups), PlusGroups)
+	}
+	if cfg.GroupCount != 2 || cfg.CurrentGroup != 0 {
+		t.Errorf("group count %d, current %d; the pedal had 2 groups, on group 1", cfg.GroupCount, cfg.CurrentGroup)
+	}
+	// Group 1 is the stage setup; group 2 the official app's default, single
+	// tap PC 0 on channel 1 -- except switch A, set to PC 1 in the app.
+	if got := cfg.Groups[0][3].Banks[1][0]; got.Number != 6 || got.Type != PlusCC {
+		t.Errorf("group 1 D long: %+v", got)
+	}
+	for s, want := range []byte{1, 0, 0, 0} {
+		sw := cfg.Groups[1][s]
+		if sw.Mode != 0 || len(sw.Banks[0]) != 1 || sw.Banks[0][0].Type != PlusPC || sw.Banks[0][0].Number != want {
+			t.Errorf("group 2 switch %c: %+v", 'A'+s, sw)
+		}
+	}
+}
+
+// The writes that set up group 2 on the real pedal: switch A of group 2 is at
+// 1761, its first message at 1762.
+func TestWritingGroup2(t *testing.T) {
+	img := loadFull(t)
+	want := img.DecodePlus()
+	want.Groups[1][0].Mode = 4
+	want.Groups[1][0].Banks[0][0] = PlusMessage{Type: PlusCC, Channel: 16, Number: 20, Value: 127}
+	ch, err := img.PlusChanges(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]byte{}
+	for _, w := range ch {
+		if w.Addr < 1761 || w.Addr >= 1761+417 {
+			t.Errorf("write at %d, outside group 2 switch A", w.Addr)
+		}
+		got[w.Addr] = w.New
+	}
+	if got[1761] != 4 || got[1763] != 15 || got[1764] != PlusCC || got[1765] != 20 || got[1766] != 127 {
+		t.Errorf("writes %v", got)
+	}
+}
+
+func TestGroupCountAndCurrentGroup(t *testing.T) {
+	img := loadFull(t)
+	want := img.DecodePlus()
+	want.GroupCount, want.CurrentGroup = 3, 2
+	ch, err := img.PlusChanges(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 2 || ch[0] != (Write{Addr: 23639, Old: 1, New: 2}) || ch[1] != (Write{Addr: 23640, Old: 0, New: 2}) {
+		t.Errorf("writes %+v; want the count (23639) then the current group (23640)", ch)
+	}
+	bad := img.DecodePlus()
+	bad.CurrentGroup = 5 // only two groups in use
+	if _, err := img.PlusChanges(bad); err == nil {
+		t.Error("a current group beyond the group count was allowed")
+	}
+}
+
+// The last reply is 0D 79, not 0D 49.
+func TestTheLastReplyIsAccepted(t *testing.T) {
+	data, _ := os.ReadFile("testdata/plus-full.syx")
+	frames := FindSysExFrames(data, []byte{0xF0, 0x00, 0x32, 0x0D})
+	last := frames[len(frames)-1]
+	if last[4] != 0x79 {
+		t.Fatalf("last reply is %02X, the fixture is wrong", last[4])
+	}
+	addr, bytes, ok := DecodeReadReply(last)
+	if !ok || addr != 23207 || len(bytes) != 439 {
+		t.Errorf("ok=%v addr=%d len=%d; want 23207 and 439 bytes", ok, addr, len(bytes))
+	}
+}
+
+func TestEveryReadRequestIsTheAppsOwn(t *testing.T) {
+	if len(ReadRequests) != 24 {
+		t.Fatalf("%d read requests, want 24", len(ReadRequests))
+	}
+	end := 0
+	for _, r := range ReadRequests {
+		if word28(r[9:13]) != end {
+			t.Errorf("request reads from %d, want %d", word28(r[9:13]), end)
+		}
+		end += word28(r[13:17]) / 16
+	}
+	if end != ConfigEnd {
+		t.Errorf("requests cover 0..%d, want 0..%d", end-1, ConfigEnd-1)
 	}
 }

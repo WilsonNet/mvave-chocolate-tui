@@ -277,7 +277,7 @@ func NewModel(midiPath string) Model {
 	vp.SetContent("MIDI log...")
 
 	return Model{
-		pui:       pedalUI{labels: loadLabels()},
+		pui:       pedalUI{labels: loadLabels(), liveGroup: -1},
 		midiPath:  midiPath,
 		midiMsgs:  make(chan MidiMsg, 256),
 		config:    cfg,
@@ -712,10 +712,12 @@ func (m *Model) requestConfig() {
 	m.pedalImage = sysex.Image{}
 	m.statusMsg = "Reading device settings..."
 	go func() {
-		// Both chunks of region 2, as the official app reads them.
+		// All of region 2, read as the official app reads it.
 		for i, req := range sysex.ReadRequests {
 			if i > 0 {
-				time.Sleep(400 * time.Millisecond) // let the first reply finish
+				// The official app spaces its 24 reads about 20 ms apart; a
+				// full read takes under two seconds this way.
+				time.Sleep(60 * time.Millisecond)
 			}
 			if err := dev.SendSysex(req); err != nil {
 				m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: read: " + err.Error()}
@@ -742,6 +744,10 @@ func (m *Model) notePedalRead() {
 	}
 	cfg := d.Decode(m.pedalImage)
 	m.device, m.cfg = d, &cfg
+	if m.pui.group >= len(cfg.Groups) {
+		m.pui.group = 0
+	}
+	m.pui.liveGroup = -1 // the read is current again
 	// The table's edit and send write this TUI's Advanced Custom layout; on
 	// the pedal screen they would be the wrong bytes, so they go -- disabled,
 	// not just hidden: key.Matches ignores a disabled binding.
