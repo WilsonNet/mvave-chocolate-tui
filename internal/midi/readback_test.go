@@ -848,9 +848,9 @@ func TestHeadlessAdvCustomSubcmds(t *testing.T) {
 
 	// Try subcmds 0x30-0x3F with value=48 and byte10=0x00 and byte10=0x0E.
 	type result struct {
-		subcmd byte
-		byte10 byte
-		acked  bool
+		subcmd  byte
+		byte10  byte
+		acked   bool
 		changed []int
 	}
 	var results []result
