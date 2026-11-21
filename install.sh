@@ -96,7 +96,7 @@ esac
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 
-api_args=(-fsSL)
+api_args=(-fsSL --retry 3 --retry-delay 1 --retry-all-errors)
 [ -n "${GITHUB_TOKEN:-}" ] && api_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
 
 if [ -z "$tag" ]; then
@@ -122,12 +122,13 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 printf 'install: downloading %s\n' "$url" >&2
-curl -fsSL -o "$tmp/$asset" "$url" || die "download failed: $url"
+curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors -o "$tmp/$asset" "$url" ||
+	die "download failed: $url"
 
 if [ "$skip_checksum" = 1 ]; then
 	printf 'install: WARNING: checksum verification skipped by flag\n' >&2
 else
-	curl -fsSL -o "$tmp/checksums.txt" \
+	curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors -o "$tmp/checksums.txt" \
 		"https://github.com/$REPO/releases/download/$tag/checksums.txt" \
 		|| die "no checksums.txt for $tag; refusing to install unverified (use --skip-checksum to override)"
 	sum="$(grep -E "  (\./)?${asset}\$" "$tmp/checksums.txt" 2>/dev/null | head -n 1 || true)"

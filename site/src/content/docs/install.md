@@ -36,7 +36,7 @@ Useful options:
 curl -fsSL .../install.sh | bash
 
 # a specific version, into a directory of your choice
-curl -fsSL .../install.sh | bash -s -- --version v0.2.1 --dir ~/bin
+curl -fsSL .../install.sh | bash -s -- --version v0.2.2 --dir ~/bin
 
 # allow writes when it opens
 curl -fsSL .../install.sh | bash -s -- --run -- --write
