@@ -44,6 +44,10 @@ the safe outcome — do **not** press `s`, which would write the original model'
 sixteen-position layout over the Plus's message lists. Export a backup (`x`)
 and report the read.
 
+Recognition can also change with the pedal's mode: a Plus may show the table in
+one mode and be mistaken for the original Chocolate in another. Use the label
+on the pedal, not only the header, and never write when the two disagree.
+
 ## Writes report success but the pedal behaves the same
 
 1. The pedal may need the live copy: the pedal screen writes both addresses;

@@ -77,5 +77,13 @@ not draw a pedal. That is deliberate: writing the sixteen-position table layout
 over a Plus's message lists could destroy them. Send a backup/read report rather
 than pressing `s`.
 
+:::danger[Check the model before writing]
+Recognition is shape-based and can change with the pedal's mode. A Plus that
+fails the Plus check in one mode can be shown as the **original Chocolate** in
+another. Look at the header's model name and at the label on the pedal: if the
+header says `M-VAVE Chocolate` but you own a Plus, do **not** press `w` or `s`.
+The write paths use different layouts. Report the read instead.
+:::
+
 The Plus layout and protocol are documented in the
 [protocol reference](/mvave-chocolate-tui/reference/protocol/).
