@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-21T02:30:00Z",
+  "title": "Design System: M-VAVE Chocolate TUI",
+  "extensions": {
+    "colorMeta": {
+      "paper": { "role": "neutral", "displayName": "Cool Paper", "canonical": "#e6e7e9", "tonalRamp": ["#1b1d21", "#33363b", "#4c5057", "#666b73", "#838890", "#a7abb1", "#c9ccd1", "#f1f1f2"] },
+      "paper-raised": { "role": "neutral", "displayName": "Raised Paper", "canonical": "#eff0f1", "tonalRamp": ["#1c1e22", "#34373c", "#4d5158", "#686c74", "#858a92", "#a9adb3", "#cdd0d4", "#f7f7f7"] },
+      "ink": { "role": "neutral", "displayName": "Drafting Ink", "canonical": "#15171b", "tonalRamp": ["#0c0d10", "#15171b", "#24272d", "#363a41", "#5d626b", "#8a8f97", "#c3c6cb", "#eff0f1"] },
+      "signal": { "role": "primary", "displayName": "Signal Orange", "canonical": "#d9442a", "tonalRamp": ["#3d0f08", "#691a0e", "#952516", "#c22f1d", "#d9442a", "#e46e5a", "#ef9a8b", "#f9cfc8"] },
+      "signal-deep": { "role": "primary", "displayName": "Deep Signal", "canonical": "#a82f1a", "tonalRamp": ["#320b05", "#57130b", "#7c1b10", "#a82f1a", "#c9432c", "#dc6b56", "#eb9a8b", "#f6d0c9"] },
+      "terminal": { "role": "neutral", "displayName": "Terminal Black", "canonical": "#101216", "tonalRamp": ["#090a0c", "#101216", "#1a1d23", "#262a31", "#3a3f48", "#5b616b", "#8b919a", "#d8dade"] },
+      "connected": { "role": "secondary", "displayName": "Connected Green", "canonical": "#1f8455", "tonalRamp": ["#071f14", "#0d3322", "#144a31", "#1a6643", "#1f8455", "#3aa973", "#6cc79a", "#b6e5cd"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Landing headline only." },
+      "headline": { "displayName": "Headline", "purpose": "Section headings." },
+      "body": { "displayName": "Body", "purpose": "Prose and documentation." },
+      "label": { "displayName": "Label", "purpose": "Mono metadata, command labels, table headers." },
+      "mono": { "displayName": "Mono", "purpose": "Commands, addresses, CC values, transcripts." }
+    },
+    "shadows": [
+      { "name": "plate", "value": "0 18px 40px -24px rgba(12,14,18,0.65), 0 2px 0 #000", "purpose": "The only depth in the system: a terminal plate reads as a physical window." }
+    ],
+    "motion": [
+      { "name": "ease-out-cell", "value": "cubic-bezier(0.2, 0.7, 0.2, 1)", "purpose": "Matrix cells fade and rise 5px on load." },
+      { "name": "stagger-cell", "value": "28ms", "purpose": "Per-cell delay across the 4x4 matrix; total under 450ms." },
+      { "name": "state-fast", "value": "140ms", "purpose": "Arrow reveal and small hover state changes." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "560px" },
+      { "name": "md", "value": "980px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Install strip",
+      "kind": "custom",
+      "refersTo": "install-strip",
+      "description": "The one command that installs the tool, with a copy affordance.",
+      "html": "<div class=\"ds-install\"><div class=\"ds-install-head\"><span>INSTALL · LINUX X86_64 / ARM64</span><button class=\"ds-copy\" type=\"button\">Copy</button></div><pre class=\"ds-cmd\"><span>$</span> curl -fsSL https://github.com/WilsonNet/mvave-chocolate-tui/releases/latest/download/install.sh | bash -s -- --run</pre></div>",
+      "css": ".ds-install { border: 1px solid #15171b; background: #15171b; color: #e6e7e9; border-radius: 2px; overflow: hidden; max-width: 640px; font-family: 'Spline Sans Mono', ui-monospace, monospace; } .ds-install-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #3a3e45; font-size: 11px; letter-spacing: .12em; color: #a9adb4; } .ds-cmd { margin: 0; padding: 15px 14px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; } .ds-cmd span { color: #d9442a; } .ds-copy { border: 1px solid #4a4e56; background: transparent; color: #d8dade; font: inherit; font-size: 11px; letter-spacing: .1em; padding: 4px 9px; border-radius: 2px; cursor: pointer; } .ds-copy:hover, .ds-copy:focus-visible { border-color: #d9442a; color: #fff; outline: none; }"
+    },
+    {
+      "name": "Terminal plate",
+      "kind": "card",
+      "refersTo": "terminal-plate",
+      "description": "A real terminal capture framed as evidence of the running tool.",
+      "html": "<figure class=\"ds-plate\"><div class=\"ds-bar\"><span><i></i>mvave-chocolate-tui</span><span>SINCO MIDI 1 · read-only</span></div><div class=\"ds-body\">Switch&nbsp;&nbsp;CC&nbsp;&nbsp;Latch&nbsp;&nbsp;State<br>1A&nbsp;&nbsp;48&nbsp;&nbsp;no&nbsp;&nbsp;↑</div></figure>",
+      "css": ".ds-plate { margin: 0; background: #101216; color: #d8dade; border: 1px solid #2a2d34; border-radius: 5px; overflow: hidden; box-shadow: 0 18px 40px -24px rgba(12,14,18,.65), 0 2px 0 #000; font-family: 'Spline Sans Mono', ui-monospace, monospace; } .ds-bar { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; background: #0c0e12; border-bottom: 1px solid #262a31; font-size: 11px; color: #9297a0; } .ds-bar i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #1f8455; margin-right: 7px; } .ds-body { padding: 18px; line-height: 1.8; font-size: 13px; }"
+    },
+    {
+      "name": "Matrix cell",
+      "kind": "nav",
+      "refersTo": "matrix-cell",
+      "description": "One switch position that links to a documentation page; the grid is the index.",
+      "html": "<a class=\"ds-cell\" href=\"#\"><span class=\"ds-id\">1A</span><span class=\"ds-title\">Install</span><span class=\"ds-go\" aria-hidden=\"true\">→</span></a>",
+      "css": ".ds-cell { position: relative; display: flex; flex-direction: column; justify-content: space-between; min-height: 104px; padding: 10px 11px 12px; border: 1px solid #c3c6cb; background: #eff0f1; color: #15171b; text-decoration: none; font-family: Archivo, ui-sans-serif, sans-serif; } .ds-id { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .06em; color: #5d626b; } .ds-title { margin-top: 10px; font-size: 14px; font-weight: 650; line-height: 1.2; } .ds-go { position: absolute; right: 9px; bottom: 8px; font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 12px; opacity: 0; transition: opacity .14s ease; } .ds-cell:hover, .ds-cell:focus-visible { background: #15171b; border-color: #15171b; color: #e6e7e9; outline: none; } .ds-cell:hover .ds-id, .ds-cell:focus-visible .ds-id { color: #d9442a; } .ds-cell:hover .ds-go, .ds-cell:focus-visible .ds-go { opacity: 1; }"
+    },
+    {
+      "name": "Preview panel",
+      "kind": "card",
+      "refersTo": "preview-panel",
+      "description": "The readout beside the matrix: what the hovered/focused switch opens.",
+      "html": "<aside class=\"ds-preview\"><div><div class=\"ds-eye\">1A · INSTALL</div><h3>Install</h3><p>One command downloads the latest release, verifies its checksum, installs it to ~/.local/bin and opens it.</p></div><div class=\"ds-open\">Open the page →</div></aside>",
+      "css": ".ds-preview { border: 1px solid #c3c6cb; background: #eff0f1; padding: 22px; min-height: 232px; display: flex; flex-direction: column; justify-content: space-between; font-family: Archivo, ui-sans-serif, sans-serif; color: #15171b; } .ds-eye { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .08em; color: #a82f1a; } .ds-preview h3 { margin: 12px 0 8px; font-size: 23px; letter-spacing: -.025em; font-weight: 660; } .ds-preview p { margin: 0; color: #3a3e45; font-size: 15px; } .ds-open { margin-top: 20px; font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 12px; color: #5d626b; }"
+    },
+    {
+      "name": "Ledger row",
+      "kind": "custom",
+      "refersTo": "ledger",
+      "description": "A use-case row: job, message, gear, guide. Tabular, no zebra fill.",
+      "html": "<table class=\"ds-ledger\"><thead><tr><th>JOB</th><th>WHAT THE PEDAL SENDS</th><th>GUIDE</th></tr></thead><tbody><tr><td class=\"ds-name\">Preset up / down</td><td class=\"ds-mono\">Program Change</td><td><a href=\"#\">Modelers</a></td></tr></tbody></table>",
+      "css": ".ds-ledger { width: 100%; border-collapse: collapse; font-family: Archivo, ui-sans-serif, sans-serif; font-size: 15px; color: #15171b; } .ds-ledger th { text-align: left; font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .12em; color: #5d626b; font-weight: 500; padding: 0 14px 10px 0; border-bottom: 1px solid #15171b; } .ds-ledger td { padding: 15px 14px 15px 0; border-bottom: 1px solid #c3c6cb; vertical-align: top; } .ds-ledger tr:last-child td { border-bottom: 0; } .ds-name { font-weight: 650; white-space: nowrap; } .ds-mono { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 13px; color: #3a3e45; } .ds-ledger a { color: #15171b; text-decoration: none; border-bottom: 1px solid #d9442a; } .ds-ledger a:focus-visible { outline: 2px solid #d9442a; outline-offset: 3px; }"
+    },
+    {
+      "name": "Primary action link",
+      "kind": "button",
+      "refersTo": "primary-action",
+      "description": "The two hero actions: docs and source.",
+      "html": "<a class=\"ds-action\" href=\"#\">Read the docs →</a>",
+      "css": ".ds-action { display: inline-block; font-family: Archivo, ui-sans-serif, sans-serif; font-size: 17px; font-weight: 600; color: #15171b; text-decoration: none; border-bottom: 2px solid #d9442a; padding-bottom: 3px; } .ds-action:hover { color: #a82f1a; } .ds-action:focus-visible { outline: 2px solid #d9442a; outline-offset: 3px; }"
+    },
+    {
+      "name": "Docs aside",
+      "kind": "custom",
+      "refersTo": "docs-aside",
+      "description": "Starlight's note/caution callout re-inked in paper and orange.",
+      "html": "<aside class=\"ds-aside\"><div class=\"ds-aside-title\">Value pairs are not universal</div><div>A block \"on\" is CC value 127 and \"off\" is 0 on most gear, but Kemper stomps expect 1 and 0.</div></aside>",
+      "css": ".ds-aside { border-inline-start: 4px solid #d9442a; background: #f4ece9; color: #15171b; padding: 16px; font-family: Archivo, ui-sans-serif, sans-serif; font-size: 16px; } .ds-aside-title { display: flex; gap: 8px; align-items: center; color: #a82f1a; font-weight: 600; margin-bottom: 8px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Silkscreen Bench Card",
+    "overview": "The site is the quick-start card that should have shipped inside the pedal's box: cool paper stock, one dark ink, one signal orange, and a grid of switches printed like a technical sheet. It treats the visitor as someone about to plug hardware in, not someone browsing a SaaS landing page. The documentation keeps the same inks but lowers its voice: a reading surface with tabular data, hairline rules and terminal captures as evidence.",
+    "keyCharacteristics": [
+      "Cool paper gray and ink, with one signal orange doing all the pointing.",
+      "A 4x4 switch matrix that doubles as the documentation index.",
+      "Condensed technical labels in mono; sentences in a grotesk.",
+      "Terminal captures framed as evidence, never as decoration.",
+      "Flat surfaces, hairline borders, almost no radius."
+    ],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Orange marks what is live, selected or clickable. It never fills a large region and never appears twice in the same glance for two different meanings.", "section": "colors" },
+      { "name": "The Two Grounds Rule", "body": "Explanations live on paper; device output lives on terminal black. Never mix the two inside one component.", "section": "colors" },
+      { "name": "The Numbers Are Mono Rule", "body": "CC values, addresses, modes, commands and byte counts are set in Spline Sans Mono. Prose is never monospaced for flavor.", "section": "typography" }
+    ],
+    "dos": [
+      "Keep one orange meaning per view: the live switch, the install prompt or a primary link.",
+      "Set every address, mode byte and command in Spline Sans Mono.",
+      "Put real terminal captures on terminal black and explain them in paper-coloured prose.",
+      "Keep the switch matrix as the navigation; it is the product's own structure."
+    ],
+    "donts": [
+      "Add rounded cards, gradient text, glass panels or colored left borders.",
+      "Use the green outside a connection state.",
+      "Invent screenshots, testimonials, benchmarks or claims the hardware notes do not support.",
+      "Let motion hide content: every entrance must end visible, and reduced motion must show the final state immediately."
+    ]
+  }
+}
