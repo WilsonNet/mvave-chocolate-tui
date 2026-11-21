@@ -99,12 +99,6 @@ type midiConnectedMsg struct {
 	err error
 }
 
-// deviceReadyMsg is posted after the on-connect auto-configure completes.
-type deviceReadyMsg struct {
-	deviceMode byte
-	err        string
-}
-
 type Model struct {
 	midiPath   string
 	midi       *midi.Device
@@ -112,6 +106,14 @@ type Model struct {
 	ready      bool
 	connected  bool
 	deviceMode byte // last mode reported by device
+	modeKnown  bool // deviceMode came from a read; 0 is a real mode, not "unknown"
+	// allowWrite gates every SysEx write. Off unless started with --write:
+	// connecting to a pedal must never change it, since a write replaces
+	// whatever the official app configured.
+	allowWrite bool
+	// rxPending holds a SysEx frame that has started but not yet ended: a
+	// 1173-byte settings reply arrives over several reads.
+	rxPending  []byte
 	log        []MidiMsg
 	statusMsg  string
 	errorMsg   string
@@ -315,55 +317,6 @@ func connectMidiCmd(path string) tea.Cmd {
 	}
 }
 
-// autoConfigureCmd sets AdvancedCustom mode on the device and applies saved config.
-// Runs as a Cmd so it returns a deviceReadyMsg when done.
-func autoConfigureCmd(dev *midi.Device, config [16]SwitchConfig) tea.Cmd {
-	return func() tea.Msg {
-		// 1. Set Advanced Custom mode.
-		modeCmd := sysex.BuildModeChange(sysex.ModeAdvancedCustom)
-		if err := dev.SendSysex(modeCmd); err != nil {
-			return deviceReadyMsg{err: err.Error()}
-		}
-		time.Sleep(50 * time.Millisecond)
-
-		// 2. Write CC config for all 16 switches (dual path: RAM + flash).
-		for i, cfg := range config {
-			for _, msg := range sysex.SplitMessages(sysex.BuildAdvCustomCCFull(i, byte(cfg.CC), cfg.Latching, 0)) {
-				if err := dev.SendSysex(msg); err != nil {
-					return deviceReadyMsg{err: err.Error()}
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-		}
-
-		// 3. Read back mode to confirm.
-		raw, _ := dev.SendReceiveSysex(sysex.BuildReadSettings(), 3)
-		deviceMode := sysex.ModeAdvancedCustom
-		if len(raw) > 0 {
-			parsed := parseHexOutput(raw)
-			frames := sysex.FindSysExFrames(parsed, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
-			for _, f := range frames {
-				if cr := sysex.ParseConfigResponse(f); cr != nil {
-					deviceMode = cr.Mode
-				}
-			}
-		}
-		return deviceReadyMsg{deviceMode: deviceMode}
-	}
-}
-
-// parseHexOutput converts amidi -d output (space-separated hex) to bytes.
-func parseHexOutput(raw []byte) []byte {
-	clean := strings.Map(func(r rune) rune {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-			return r
-		}
-		return -1
-	}, string(raw))
-	data, _ := hex.DecodeString(clean)
-	return data
-}
-
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -387,23 +340,19 @@ drained:
 			m.midi = msg.dev
 			m.connected = true
 			m.ready = true
-			m.statusMsg = "Connected — setting Advanced Custom mode..."
 			cmds = append(cmds, m.midiReadLoop())
-			cmds = append(cmds, autoConfigureCmd(msg.dev, m.config))
-		}
-		return m, tea.Batch(cmds...)
-
-	case deviceReadyMsg:
-		if msg.err != "" {
-			m.statusMsg = "Config error: " + msg.err
-		} else {
-			m.deviceMode = msg.deviceMode
-			if msg.deviceMode == sysex.ModeAdvancedCustom {
-				m.statusMsg = "Advanced Custom active — config applied"
+			// Read, never write, on connect. Configuring here overwrote all
+			// sixteen switches -- and the device's mode -- before a key was
+			// pressed, which on a pedal set up in the official app destroys
+			// that setup. Writing is `s`, and only with --write.
+			m.requestConfig()
+			if m.allowWrite {
+				m.statusMsg = "Connected — write enabled; press s to send"
 			} else {
-				m.statusMsg = fmt.Sprintf("Warning: device mode=%02X, expected Advanced Custom", msg.deviceMode)
+				m.statusMsg = "Connected (read-only) — start with --write to send"
 			}
 		}
+		return m, tea.Batch(cmds...)
 
 	case tickMsg:
 		cmds = append(cmds, tickCmd())
@@ -517,6 +466,10 @@ func (m *Model) processMidiMessage(msg MidiMsg) {
 }
 
 func (m *Model) parseMidiBytes(data []byte) {
+	if len(m.rxPending) > 0 {
+		data = append(m.rxPending, data...)
+		m.rxPending = nil
+	}
 	for i := 0; i < len(data); {
 		b := data[i]
 		switch {
@@ -537,6 +490,8 @@ func (m *Model) parseMidiBytes(data []byte) {
 				}
 			}
 			if end < 0 {
+				// The rest of this frame is still on its way.
+				m.rxPending = append([]byte(nil), data[i:]...)
 				return
 			}
 			frame := data[i : end+1]
@@ -548,6 +503,8 @@ func (m *Model) parseMidiBytes(data []byte) {
 				// Only update UI mode display; never overwrite config from dump
 				// (AdvCustom CC is not stored in 0D41 dump).
 				m.deviceMode = cr.Mode
+				m.modeKnown = true
+				m.statusMsg = "Read from device"
 			}
 			i = end + 1
 		default:
@@ -639,6 +596,10 @@ func (m *Model) sendAllConfig() {
 		m.statusMsg = "Not connected"
 		return
 	}
+	if !m.allowWrite {
+		m.statusMsg = "Read-only: restart with --write to send config"
+		return
+	}
 	config := m.config
 	midiDev := m.midi
 	m.statusMsg = "Sending Advanced Custom config..."
@@ -668,33 +629,22 @@ func (m *Model) sendAllConfig() {
 	}()
 }
 
-// requestConfig reads the device mode via combined amidi send+receive.
+// requestConfig asks the device for its settings.
+//
+// Send only. The reply arrives through midiReadLoop, which holds the device's
+// MIDI input open for as long as the TUI runs -- so a second process that
+// tries to send AND listen (amidi -d) cannot open the input at all ("Device
+// or resource busy"), and a read used to fail every time.
 func (m *Model) requestConfig() {
 	if m.midi == nil {
 		m.statusMsg = "Not connected"
 		return
 	}
 	dev := m.midi
-	m.statusMsg = "Reading device mode..."
-
+	m.statusMsg = "Reading device settings..."
 	go func() {
-		raw, err := dev.SendReceiveSysex(sysex.BuildReadSettings(), 3)
-		if err != nil {
+		if err := dev.SendSysex(sysex.BuildReadSettings()); err != nil {
 			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "ERR: read: " + err.Error()}
-			return
-		}
-		parsed := parseHexOutput(raw)
-		frames := sysex.FindSysExFrames(parsed, []byte{0xF0, 0x00, 0x32, 0x0D, 0x49})
-		if len(frames) == 0 {
-			m.midiMsgs <- MidiMsg{Timestamp: time.Now(), Hex: "DONE: no config frame in response"}
-			return
-		}
-		for _, f := range frames {
-			if cr := sysex.ParseConfigResponse(f); cr != nil {
-				name := sysex.ModeNames[cr.Mode]
-				m.midiMsgs <- MidiMsg{Timestamp: time.Now(),
-					Hex: fmt.Sprintf("DONE: device mode=0x%02X (%s)", cr.Mode, name)}
-			}
 		}
 	}()
 }
@@ -713,10 +663,12 @@ func (m *Model) View() string {
 
 	connStr := redStyle.Render("○ Disconnected")
 	if m.connected {
-		modeOK := m.deviceMode == sysex.ModeAdvancedCustom || m.deviceMode == 0
-		if modeOK {
+		switch {
+		case !m.modeKnown:
+			connStr = greenStyle.Render("● Connected") + " — mode not read yet"
+		case m.deviceMode == sysex.ModeAdvancedCustom:
 			connStr = greenStyle.Render("● Advanced Custom")
-		} else {
+		default:
 			connStr = greenStyle.Render("● Connected") + " " +
 				redStyle.Render(fmt.Sprintf("[device mode=%02X?]", m.deviceMode))
 		}
@@ -768,8 +720,17 @@ func (m *Model) renderEdit() string {
 
 func main() {
 	midiPath := defaultMidiDevice
-	if len(os.Args) > 1 {
-		midiPath = os.Args[1]
+	allowWrite := false
+	var args []string
+	for _, a := range os.Args[1:] {
+		if a == "--write" {
+			allowWrite = true
+		} else {
+			args = append(args, a)
+		}
+	}
+	if len(args) > 0 {
+		midiPath = args[0]
 	} else {
 		if detected, err := detect.Find(); err == nil && detected != "" {
 			midiPath = detected
@@ -781,6 +742,7 @@ func main() {
 		}
 	}
 	m := NewModel(midiPath)
+	m.allowWrite = allowWrite
 	p := tea.NewProgram(&m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

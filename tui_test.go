@@ -142,7 +142,8 @@ func TestBuildCCConfigChannelAllBanks(t *testing.T) {
 
 func TestSendAllConfigWithoutDevice(t *testing.T) {
 	m := NewModel("/dev/null")
-	m.midi = nil // no device
+	m.allowWrite = true // this test exercises sending, as with --write
+	m.midi = nil        // no device
 
 	m.sendAllConfig()
 	if m.statusMsg != "Not connected" {
@@ -169,6 +170,7 @@ func (m *mockMidiDevice) SendSysex(data []byte) error {
 
 func TestSendAllConfigWithMockDevice(t *testing.T) {
 	m := NewModel("/dev/null")
+	m.allowWrite = true // this test exercises sending, as with --write
 	mock := &mockMidiDevice{}
 
 	// Replace midi with mock by creating a real midi.Device using a temp file
@@ -289,6 +291,7 @@ func TestTUIEditAndSendConfig(t *testing.T) {
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	m := NewModel(tmpFile.Name())
+	m.allowWrite = true // this test exercises sending, as with --write
 	tm := teatest.NewTestModel(
 		t, &m,
 		teatest.WithInitialTermSize(100, 30),
@@ -396,6 +399,7 @@ func TestTUIAdvancedCustomSendAllConfig(t *testing.T) {
 
 	// Build a Model with switch 0 set to CC=48 (TUI is always Advanced Custom now).
 	m := NewModel(path)
+	m.allowWrite = true // this test exercises sending, as with --write
 	m.midi = dev
 	m.config[0].CC = 48
 
@@ -501,6 +505,7 @@ func TestTUIAdvancedCustomFullJourney(t *testing.T) {
 	}
 
 	m1 := NewModel(path)
+	m1.allowWrite = true // this test exercises sending, as with --write
 	m1.midi = dev1
 	m1.config[0].CC = 48
 
@@ -651,4 +656,98 @@ func TestTUILogViewToggle(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second*3))
+}
+
+// openFileDevice gives a Model a "device" that is a temp file, so anything
+// written to it can be seen afterwards.
+func openFileDevice(t *testing.T) (*midi.Device, string) {
+	t.Helper()
+	f, err := os.CreateTemp("", "midi-readonly-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	dev, err := midi.Open(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dev.Close() })
+	return dev, f.Name()
+}
+
+// assertOnlyReads fails if anything but a settings read request (0D 41)
+// was sent: asking is not changing.
+func assertOnlyReads(t *testing.T, path string) {
+	t.Helper()
+	time.Sleep(300 * time.Millisecond) // sends happen in goroutines
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range sysex.FindSysExFrames(data, []byte{0xF0}) {
+		if len(f) < 5 || f[3] != 0x0D || f[4] != 0x41 {
+			t.Fatalf("a non-read message was sent to the device: % X", f)
+		}
+	}
+}
+
+// Without --write, `s` must not touch the device.
+func TestSendRefusedWhenReadOnly(t *testing.T) {
+	m := NewModel("/dev/null")
+	dev, path := openFileDevice(t)
+	m.midi = dev
+
+	m.sendAllConfig()
+
+	if !strings.Contains(m.statusMsg, "Read-only") {
+		t.Errorf("status: expected a read-only refusal, got %q", m.statusMsg)
+	}
+	assertOnlyReads(t, path)
+	if info, _ := os.Stat(path); info.Size() != 0 {
+		t.Errorf("%d bytes sent by a refused send", info.Size())
+	}
+}
+
+// Connecting used to write CC 1-16 to every switch before a key was pressed.
+// Now it only asks for the settings -- even with --write, which only enables `s`.
+func TestConnectOnlyReads(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		m := NewModel("/dev/null")
+		m.allowWrite = allow
+		dev, path := openFileDevice(t)
+
+		m.Update(midiConnectedMsg{dev: dev})
+
+		if !m.connected {
+			t.Fatalf("allowWrite=%v: not connected", allow)
+		}
+		assertOnlyReads(t, path)
+	}
+}
+
+// A settings reply is 1173 bytes and arrives over several reads; a frame cut
+// in two used to be dropped. testdata/original-read1.syx is an original
+// Chocolate's reply (from cbix/mvave-chocolate-sysex), in Program Change B.
+func TestASplitReplyIsReassembled(t *testing.T) {
+	frame, err := os.ReadFile("testdata/original-read1.syx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewModel("/dev/null")
+	if m.modeKnown {
+		t.Fatal("mode known before any read")
+	}
+	stream := append([]byte{0xB0, 0x05, 0x7F}, frame...) // a press first
+	for len(stream) > 0 {
+		n := 37
+		if n > len(stream) {
+			n = len(stream)
+		}
+		m.parseMidiBytes(stream[:n])
+		stream = stream[n:]
+	}
+	if !m.modeKnown || m.deviceMode != sysex.ModeProgramChangeB {
+		t.Errorf("modeKnown=%v deviceMode=%d, want Program Change B", m.modeKnown, m.deviceMode)
+	}
 }
