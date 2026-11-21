@@ -10,7 +10,7 @@ const repo = 'https://github.com/WilsonNet/mvave-chocolate-tui';
 export default defineConfig({
   site,
   base,
-  trailingSlash: 'ignore',
+  trailingSlash: 'always',
   integrations: [
     starlight({
       title: 'M-VAVE Chocolate TUI',
@@ -57,7 +57,7 @@ export default defineConfig({
         {
           label: 'Use cases',
           items: [
-            { label: 'Guitar & amp modelers', slug: 'use-cases/modelers' },
+            { label: 'Guitar amps & modelers', slug: 'use-cases/modelers' },
             { label: 'DAWs', slug: 'use-cases/daws' },
             { label: 'Loopers', slug: 'use-cases/loopers' },
             { label: 'Page turning & streaming', slug: 'use-cases/page-turning' },

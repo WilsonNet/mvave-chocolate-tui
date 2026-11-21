@@ -11,6 +11,7 @@ colors:
   hairline-soft: "#d5d7da"
   signal: "#d9442a"
   signal-deep: "#a82f1a"
+  signal-bright: "#ff7a5c"
   terminal: "#101216"
   terminal-deep: "#0c0e12"
   terminal-text: "#d8dade"
@@ -123,6 +124,9 @@ Two inks on paper, plus a terminal black and one semantic green.
   warm color on the page outside the terminal captures.
 - **Deep Signal** (`#a82f1a`): link hover and the emphasized word in the
   headline; the same hue, one step darker for contrast on paper.
+- **Signal Bright** (`#ff7a5c`): the same hue one step lighter, used only for
+  small orange text on ink (the `$` prompt, an active cell id, footer hovers)
+  where `#d9442a` would fall below 4.5:1.
 
 ### Neutral
 
@@ -188,7 +192,7 @@ full-width ledgers and a two-column install block. Sections are separated by
 without a top rule.
 
 The full-page grid is 4×4 at desktop and 2 columns below 560px, matching the
-pedal's switch layout. The docs site uses Starlight's content column at 46rem
+pedal's switch layout. The docs site uses Starlight's content column at 40rem (prose capped at 70ch)
 with a 17rem sidebar; the same hairlines and paper ground carry over.
 
 ## Elevation & Depth

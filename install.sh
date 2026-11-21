@@ -9,6 +9,7 @@
 #   --version TAG    install a specific release, e.g. v0.1.0 (default: latest)
 #   --run            start the TUI after installing; extra args after -- are passed on
 #   --check          install, then print the binary version and exit
+#   --skip-checksum  install even if the release has no checksums (not recommended)
 #   -h, --help       show this help
 #
 # Environment:
@@ -24,6 +25,7 @@ dir="${MVAVE_INSTALL_DIR:-$HOME/.local/bin}"
 tag=""
 run=0
 check=0
+skip_checksum=0
 passthru=()
 
 die() {
@@ -61,6 +63,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--check)
 		check=1
+		shift
+		;;
+	--skip-checksum)
+		skip_checksum=1
 		shift
 		;;
 	-h | --help)
@@ -118,25 +124,24 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 printf 'install: downloading %s\n' "$url" >&2
 curl -fsSL -o "$tmp/$asset" "$url" || die "download failed: $url"
 
-if curl -fsSL -o "$tmp/checksums.txt" \
-	"https://github.com/$REPO/releases/download/$tag/checksums.txt" 2>/dev/null; then
-	sum="$(grep -E "  (\./)?${asset}\$" "$tmp/checksums.txt" 2>/dev/null | head -n 1 || true)"
-	if [ -n "$sum" ]; then
-		if command -v sha256sum >/dev/null 2>&1; then
-			(cd "$tmp" && printf '%s\n' "$sum" | sha256sum -c --quiet -) ||
-				die "checksum mismatch for $asset"
-		elif command -v shasum >/dev/null 2>&1; then
-			(cd "$tmp" && printf '%s\n' "$sum" | shasum -a 256 -c --quiet -) ||
-				die "checksum mismatch for $asset"
-		else
-			printf 'install: no sha256 tool; skipping checksum\n' >&2
-		fi
-		printf 'install: checksum ok\n' >&2
-	else
-		printf 'install: checksums.txt has no entry for %s; skipping\n' "$asset" >&2
-	fi
+if [ "$skip_checksum" = 1 ]; then
+	printf 'install: WARNING: checksum verification skipped by flag\n' >&2
 else
-	printf 'install: no checksums.txt in %s; skipping verification\n' "$tag" >&2
+	curl -fsSL -o "$tmp/checksums.txt" \
+		"https://github.com/$REPO/releases/download/$tag/checksums.txt" \
+		|| die "no checksums.txt for $tag; refusing to install unverified (use --skip-checksum to override)"
+	sum="$(grep -E "  (\./)?${asset}\$" "$tmp/checksums.txt" 2>/dev/null | head -n 1 || true)"
+	[ -n "$sum" ] || die "checksums.txt has no entry for $asset; refusing to install unverified"
+	if command -v sha256sum >/dev/null 2>&1; then
+		(cd "$tmp" && printf '%s\n' "$sum" | sha256sum -c --quiet -) ||
+			die "checksum mismatch for $asset"
+	elif command -v shasum >/dev/null 2>&1; then
+		(cd "$tmp" && printf '%s\n' "$sum" | shasum -a 256 -c --quiet -) ||
+			die "checksum mismatch for $asset"
+	else
+		die "no sha256 tool; install coreutils or use --skip-checksum"
+	fi
+	printf 'install: checksum ok\n' >&2
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp" || die "could not extract $asset"

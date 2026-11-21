@@ -33,8 +33,9 @@ hardware.
 ## Positioning
 
 A Linux-native TUI that talks to the pedal directly over ALSA raw MIDI, with
-protocol knowledge verified against real hardware for both the original
-Chocolate and the Chocolate Plus. It reads first and refuses to write unless
+protocol knowledge checked against a real Chocolate Plus. The original
+Chocolate's pedal screen is built from the same decoder and is marked untested
+on hardware in the app and docs. It reads first and refuses to write unless
 started with `--write`, so opening it cannot silently replace a setup made in
 the official app.
 
@@ -58,8 +59,9 @@ the official app.
   (Plus), groups, backup/restore, mark-and-compare.
 - Linux only (ALSA), Go 1.26+, GPL-3.0-or-later, public repository at
   `https://github.com/WilsonNet/mvave-chocolate-tui`.
-- The original Chocolate's pedal screen was verified on hardware during this
-  release; the Plus layer was verified by its contributor.
+- The Plus layer was verified by its contributor on a real Plus. The original
+  Chocolate's pedal screen is built from the same decoder and is still marked
+  untested on hardware in the app and the docs.
 
 ## Brand Commitments
 
@@ -70,7 +72,8 @@ the official app.
 ## Evidence on Hand
 
 - `README.md`, `docs/sysex-protocol.md`, `CLAUDE.md`/`AGENTS.md`.
-- Real terminal captures of the TUI against a physical original Chocolate.
+- Real terminal captures of the TUI against a physical Chocolate Plus during a
+  read-only session.
 - 98+ Go tests including device E2E tests; known-good SysEx vectors.
 - No invented testimonials, benchmarks, or user counts.
 

@@ -28,7 +28,7 @@
   --sl-color-text-accent: #b1331d;
   --sl-color-text-invert: #fbfbf9;
 
-  --sl-content-width: 46rem;
+  --sl-content-width: 40rem;
   --sl-sidebar-width: 17rem;
 }
 
@@ -62,7 +62,7 @@ body {
 }
 
 .sl-markdown-content {
-  font-size: 1.02rem;
+  font-size: 1rem;
   line-height: 1.72;
 }
 
@@ -156,3 +156,25 @@ figcaption {
 @media (max-width: 560px) {
   .site-title { font-size: 1rem; }
 }
+
+/* The docs share the landing's flat, hairline system: no side stripes. */
+.sidebar-content a[aria-current='page'] {
+  box-shadow: none;
+  font-weight: 650;
+}
+.starlight-aside {
+  border: 1px solid var(--sl-color-asides-border);
+  border-inline-start-width: 1px;
+}
+
+/* Let dense reference tables scroll instead of crushing their columns. */
+@media (max-width: 640px) {
+  .sl-markdown-content table {
+    display: block;
+    overflow-x: auto;
+    white-space: normal;
+  }
+}
+
+/* Read measure: prose caps at 70ch; code, tables and images keep the column. */
+.sl-markdown-content p { max-width: 70ch; }

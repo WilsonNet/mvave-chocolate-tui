@@ -24,7 +24,8 @@ The script:
 
 1. resolves the latest GitHub release (or the one you pin),
 2. downloads the tarball for your architecture,
-3. verifies it against the release's `checksums.txt`,
+3. verifies it against the release's `checksums.txt` (and refuses to install if
+   the checksum file or entry is missing),
 4. installs `mvave-chocolate-tui` to `~/.local/bin`, and
 5. with `--run`, opens it in the current terminal.
 
@@ -35,13 +36,15 @@ Useful options:
 curl -fsSL .../install.sh | bash
 
 # a specific version, into a directory of your choice
-curl -fsSL .../install.sh | bash -s -- --version v0.1.1 --dir ~/bin
+curl -fsSL .../install.sh | bash -s -- --version v0.2.1 --dir ~/bin
 
 # allow writes when it opens
 curl -fsSL .../install.sh | bash -s -- --run -- --write
 ```
 
 If `~/.local/bin` is not on your `PATH`, the script prints the line to add.
+`--skip-checksum` exists for unusual mirrors, but it turns the verification off;
+prefer fixing the download.
 
 ## Manual download
 
@@ -53,8 +56,8 @@ Verify, unpack and install by hand:
 
 ```bash
 sha256sum -c checksums.txt --ignore-missing
-tar -xzf mvave-chocolate-tui_0.1.1_linux_amd64.tar.gz
-install -m 0755 mvave-chocolate-tui_0.1.1_linux_amd64/mvave-chocolate-tui ~/.local/bin/
+tar -xzf mvave-chocolate-tui_0.2.0_linux_amd64.tar.gz
+install -m 0755 mvave-chocolate-tui_0.2.0_linux_amd64/mvave-chocolate-tui ~/.local/bin/
 ```
 
 ## Build from source

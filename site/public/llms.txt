@@ -5,7 +5,8 @@
 > started with --write; each write is acknowledged and read back.
 
 ## Docs
-- Overview: https://wilsonnet.github.io/mvave-chocolate-tui/
+- Landing: https://wilsonnet.github.io/mvave-chocolate-tui/
+- Overview: https://wilsonnet.github.io/mvave-chocolate-tui/overview/
 - Install: https://wilsonnet.github.io/mvave-chocolate-tui/install/
 - First run: https://wilsonnet.github.io/mvave-chocolate-tui/first-run/
 - Protocol: https://wilsonnet.github.io/mvave-chocolate-tui/reference/protocol/

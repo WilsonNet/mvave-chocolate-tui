@@ -20,7 +20,7 @@ const cells = [
   { id: '2D', t: 'SysEx protocol', d: 'Jieli vendor messages, reads, writes, checksums and the 23,646-byte configuration region.', h: u('reference/protocol/') },
   { id: '3A', t: 'Linux & testing', d: 'ALSA raw MIDI, amidi, busy ports, virtual ports and how to test without a pedal.', h: u('reference/linux/') },
   { id: '3B', t: 'Troubleshooting', d: 'Device busy, mode not read, unrecognised pedal, writes that do not persist.', h: u('reference/troubleshooting/') },
-  { id: '3C', t: 'Guitar & modelers', d: 'Program Change presets and CC block toggles for Ampero, Valeton, HX Stomp, Kemper and plugins.', h: u('use-cases/modelers/') },
+  { id: '3C', t: 'Amp modelers', d: 'Program Change presets and CC block toggles for Ampero, Valeton, HX Stomp, Kemper and plugins.', h: u('use-cases/modelers/') },
   { id: '3D', t: 'DAWs', d: 'Transport, record, undo and loop control in Ableton, REAPER and Ardour.', h: u('use-cases/daws/') },
   { id: '4A', t: 'Loopers', d: 'Record, overdub, stop and clear on HX Stomp, RC-5, Ampero and Ableton.', h: u('use-cases/loopers/') },
   { id: '4B', t: 'Page turning', d: 'Turn pages in forScore and OnSong, or drive a teleprompter, with zero MIDI mapping.', h: u('use-cases/page-turning/') },
@@ -49,7 +49,7 @@ const jsonLd = {
       downloadUrl: `${repo}/releases/latest`,
       codeRepository: repo,
       license: 'https://www.gnu.org/licenses/gpl-3.0.html',
-      softwareVersion: '0.2.0',
+      softwareVersion: '0.2.1',
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
       author: { '@type': 'Organization', name: 'WilsonNet', url: 'https://github.com/WilsonNet' },
     },
@@ -93,6 +93,7 @@ const jsonLd = {
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to content</a>
     <header class="top">
       <div class="wrap">
         <a class="brand" href={u('')}>
@@ -101,19 +102,19 @@ const jsonLd = {
         </a>
         <nav aria-label="Main">
           <a href={u('install/')}>Docs</a>
-          <a href={`${repo}/releases`}>Releases</a>
+          <a class="releases" href={`${repo}/releases`}>Releases</a>
           <a class="gh" href={repo}>
             <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
               <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
             </svg>
             GitHub
           </a>
-          <span class="pill">v0.2.0</span>
+          <span class="pill">v0.2.1</span>
         </nav>
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <section class="hero">
         <div class="wrap">
           <div>
@@ -133,9 +134,7 @@ const jsonLd = {
               <pre id="cmd"><span class="p">$</span> curl -fsSL https://github.com/<wbr />WilsonNet/mvave-chocolate-tui/<wbr />releases/latest/download/install.sh | bash -s -- --run</pre>
             </div>
             <p class="hero-note">
-              Downloads the latest release, checks its SHA-256, installs to
-              <code>~/.local/bin</code> and opens it. Add
-              <code>--&nbsp;--write</code> to allow writes.
+              Downloads the latest release, checks its SHA-256, installs to <code>~/.local/bin</code> and opens it. Add <code>-- --write</code> to allow writes.
             </p>
 
             <div class="actions">
@@ -158,8 +157,8 @@ const jsonLd = {
               />
             </div>
             <figcaption class="caption">
-              <span>Real capture · 16 switch positions</span>
-              <span>1A selected</span>
+              <span>Real capture · SINCO MIDI 1 · read-only</span>
+              <span>16 switch positions</span>
             </figcaption>
           </figure>
         </div>
@@ -169,7 +168,7 @@ const jsonLd = {
         <div class="wrap">
           <span><b>Read-only</b> by default</span>
           <span><b>Acknowledged</b> byte writes</span>
-          <span><b>Checked</b> on real pedals</span>
+          <span><b>Plus</b> checked on hardware</span>
           <span><b>GPL-3.0</b> · Go 1.26+</span>
           <span><b>98</b> test functions</span>
         </div>
@@ -192,7 +191,8 @@ const jsonLd = {
               <li><b>Unknown is not overwritten.</b> When the pedal is not recognised, the TUI stays on the table screen instead of guessing a layout.</li>
             </ul>
           </div>
-          <div class="transcript" role="img" aria-label="Write confirmation shown by the TUI">
+          <figure class="transcript">
+            <figcaption>What a write looks like: the plan, then the acknowledgement and read-back.</figcaption>
 <pre>Write 2 byte(s) to the pedal?
   address   48    48 → 49
   address 1840    48 → 49
@@ -201,7 +201,7 @@ acknowledged; the pedal is read back after.
 ────────────────────────────────────────
 ● unwritten edits   Read from pedal
 y write · n cancel</pre>
-          </div>
+          </figure>
         </div>
       </section>
 
@@ -209,15 +209,16 @@ y write · n cancel</pre>
         <div class="wrap">
           <h2>Sixteen switches. Sixteen answers.</h2>
           <p class="sub">
-            The pedal's own grid is the index. Hover or tab through it to see
-            what each page covers, then open it.
+            The pedal's own grid is the index. Hover or tab through it to
+            preview a page; on touch, tap a switch to open it.
           </p>
           <div class="matrix-layout">
-            <div class="matrix" role="list">
+            <nav aria-label="Documentation index">
+            <ul class="matrix">
               {cells.map((c, i) => (
+                <li>
                 <a
-                  class="cell"
-                  role="listitem"
+                  class={i === 0 ? "cell active" : "cell"}
                   href={c.h}
                   data-id={c.id}
                   data-title={c.t}
@@ -229,8 +230,10 @@ y write · n cancel</pre>
                   <span class="t">{c.t}</span>
                   <span class="go" aria-hidden="true">→</span>
                 </a>
+                </li>
               ))}
-            </div>
+            </ul>
+            </nav>
             <aside class="preview" aria-live="polite">
               <div>
                 <div class="id" id="pv-id">1A · INSTALL</div>
@@ -240,7 +243,9 @@ y write · n cancel</pre>
                   checksum, installs it to ~/.local/bin and opens it.
                 </p>
               </div>
-              <div class="open" id="pv-open">Open the page →</div>
+              <div class="open" id="pv-open">
+                <a href={u('install/')}>Open the page →</a>
+              </div>
             </aside>
           </div>
         </div>
@@ -248,10 +253,10 @@ y write · n cancel</pre>
 
       <section>
         <div class="wrap">
-          <h2>What people actually play.</h2>
+          <h2>Common setups.</h2>
           <p class="sub">
             The pedal sends MIDI; the receiving device decides what the numbers
-            mean. These are the maps people use most, with sources.
+            mean. These are common maps, with sources.
           </p>
           <table class="ledger">
             <thead>
@@ -306,7 +311,7 @@ y write · n cancel</pre>
               <ol class="steps">
                 <li>
                   <b>Install and open</b>
-                  <span>Run the command above. Pin a version with <code>--version v0.2.0</code> or change the directory with <code>--dir</code>.</span>
+                  <span>Run the command above. Pin a version with <code>--version v0.2.1</code> or change the directory with <code>--dir</code>.</span>
                 </li>
                 <li>
                   <b>Plug the pedal in</b>
@@ -380,7 +385,8 @@ y write · n cancel</pre>
         if (preview) preview.textContent = `${id} · ${t}`.toUpperCase();
         if (title) title.textContent = t;
         if (desc) desc.textContent = d;
-        if (open) open.innerHTML = `<a href="${h}">Open the page →</a>`;
+        const link = open?.querySelector('a');
+        if (link) link.href = h;
       }
 
       cells.forEach((cell) => {

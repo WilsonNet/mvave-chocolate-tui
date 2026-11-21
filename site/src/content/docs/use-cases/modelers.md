@@ -1,5 +1,5 @@
 ---
-title: Guitar & amp modelers
+title: "Guitar amps & modelers"
 description: Preset switching with Program Change and block toggles with CC for Ampero, Valeton, HX Stomp, Kemper and plugins.
 ---
 

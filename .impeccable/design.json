@@ -9,6 +9,7 @@
       "ink": { "role": "neutral", "displayName": "Drafting Ink", "canonical": "#15171b", "tonalRamp": ["#0c0d10", "#15171b", "#24272d", "#363a41", "#5d626b", "#8a8f97", "#c3c6cb", "#eff0f1"] },
       "signal": { "role": "primary", "displayName": "Signal Orange", "canonical": "#d9442a", "tonalRamp": ["#3d0f08", "#691a0e", "#952516", "#c22f1d", "#d9442a", "#e46e5a", "#ef9a8b", "#f9cfc8"] },
       "signal-deep": { "role": "primary", "displayName": "Deep Signal", "canonical": "#a82f1a", "tonalRamp": ["#320b05", "#57130b", "#7c1b10", "#a82f1a", "#c9432c", "#dc6b56", "#eb9a8b", "#f6d0c9"] },
+      "signal-bright": { "role": "primary", "displayName": "Signal Bright", "canonical": "#ff7a5c", "tonalRamp": ["#461208", "#77200f", "#a92e16", "#d9442a", "#ef6450", "#ff7a5c", "#ffa08a", "#ffd3c8"] },
       "terminal": { "role": "neutral", "displayName": "Terminal Black", "canonical": "#101216", "tonalRamp": ["#090a0c", "#101216", "#1a1d23", "#262a31", "#3a3f48", "#5b616b", "#8b919a", "#d8dade"] },
       "connected": { "role": "secondary", "displayName": "Connected Green", "canonical": "#1f8455", "tonalRamp": ["#071f14", "#0d3322", "#144a31", "#1a6643", "#1f8455", "#3aa973", "#6cc79a", "#b6e5cd"] }
     },

@@ -11,6 +11,7 @@
   --line-soft: #d5d7da;
   --signal: #d9442a;
   --signal-dark: #a82f1a;
+  --signal-bright: #ff7a5c;
   --plate: #101216;
   --plate-2: #0c0e12;
   --plate-text: #d8dade;
@@ -173,7 +174,7 @@ h1 em { font-style: normal; color: var(--signal-dark); }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.install .p { color: var(--signal); user-select: none; }
+.install .p { color: var(--signal-bright); user-select: none; }
 
 .hero-note {
   margin: 14px 0 0;
@@ -300,7 +301,7 @@ h2 {
   border-color: var(--ink);
   color: var(--paper);
 }
-.cell:hover .id, .cell:focus-visible .id, .cell.active .id { color: var(--signal); }
+.cell:hover .id, .cell:focus-visible .id, .cell.active .id { color: var(--signal-bright); }
 .cell:hover .go, .cell:focus-visible .go, .cell.active .go { opacity: 1; }
 
 @keyframes cell-in {
@@ -371,7 +372,7 @@ h2 {
 footer { background: var(--ink); color: #c9ccd2; padding: 52px 0 44px; }
 footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 28px; align-items: flex-start; }
 footer a { color: #e6e7e9; text-decoration: none; border-bottom: 1px solid #4a4e56; }
-footer a:hover { color: var(--signal); border-color: var(--signal); }
+footer a:hover { color: var(--signal-bright); border-color: var(--signal); }
 footer .brandline { font-weight: 700; color: #fff; letter-spacing: -0.02em; }
 footer .small { font-family: var(--mono); font-size: 0.72rem; color: #8b9099; margin-top: 8px; }
 footer nav { display: flex; gap: 22px; font-size: 0.9rem; }
@@ -413,3 +414,65 @@ footer nav { display: flex; gap: 22px; font-size: 0.9rem; }
   .plate-bar { font-size: 0.64rem; }
   .plate-bar span:last-child { display: none; }
 }
+
+/* Skip link: visible on keyboard focus only. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+}
+.skip:focus {
+  left: 16px;
+  top: 12px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+/* The matrix is a real list; the anchors are the grid items. */
+.matrix { list-style: none; margin: 0; padding: 0; }
+.matrix > li { display: contents; }
+.cell { width: 100%; }
+
+/* Short flags must not split at narrow widths. */
+.hero-note code, .steps code { white-space: nowrap; }
+
+/* Preview link keeps the panel's key action real from first paint. */
+.preview .open a {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid var(--signal);
+}
+.preview .open a:hover { color: var(--signal-dark); }
+
+.transcript figcaption {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: #9297a0;
+  margin-bottom: 12px;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 560px) {
+  .top nav a.releases { display: none; }
+  .top nav a:not(.gh):not(.releases) { display: inline; }
+  .plate-bar span:last-child { display: inline; }
+  .plate-bar { gap: 8px; }
+  .plate-bar span { white-space: nowrap; }
+}
+
+/* Touch has no hover: the cells are the navigation, so drop the preview. */
+@media (hover: none) {
+  .preview { display: none; }
+  .matrix-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The transcript is a plate, not a document figure: no UA margins. */
+figure.transcript { margin: 0; }
+
+.transcript figcaption { white-space: normal; line-height: 1.45; }

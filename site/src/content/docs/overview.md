@@ -15,7 +15,7 @@ It is built around one rule: **opening it must never change your pedal**.
 - Reads the pedal's configuration and shows the sixteen switch positions as a
   table, or the four physical switches as a pedal screen.
 - Edits what each switch sends: CC, Program Change, Note, channel, value,
-  latching, and on the Plus up to sixteen messages per switch.
+  latching, and on the Plus up to sixteen messages per bank, two banks per switch.
 - Changes the operating mode, with a confirmation, an acknowledgement and a
   read-back.
 - Backs up every byte it can read, restores a backup as edits, and lists what
