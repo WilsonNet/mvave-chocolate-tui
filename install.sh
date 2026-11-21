@@ -120,7 +120,7 @@ curl -fsSL -o "$tmp/$asset" "$url" || die "download failed: $url"
 
 if curl -fsSL -o "$tmp/checksums.txt" \
 	"https://github.com/$REPO/releases/download/$tag/checksums.txt" 2>/dev/null; then
-	sum="$(grep "  ${asset}\$" "$tmp/checksums.txt" 2>/dev/null | head -n 1 || true)"
+	sum="$(grep -E "  (\./)?${asset}\$" "$tmp/checksums.txt" 2>/dev/null | head -n 1 || true)"
 	if [ -n "$sum" ]; then
 		if command -v sha256sum >/dev/null 2>&1; then
 			(cd "$tmp" && printf '%s\n' "$sum" | sha256sum -c --quiet -) ||
