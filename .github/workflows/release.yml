@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build ${{ matrix.goarch }}
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          dir="mvave-chocolate-tui_${version}_linux_${GOARCH}"
+          mkdir -p "dist/${dir}"
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o "dist/${dir}/mvave-chocolate-tui" .
+          cp README.md LICENSE "dist/${dir}/"
+          tar -C dist -czf "dist/${dir}.tar.gz" "${dir}"
+          rm -rf "dist/${dir}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum ./*.tar.gz > checksums.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.tar.gz dist/checksums.txt
+
+  install-check:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the release with install.sh and check the binary
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Give the release a moment to become the "latest" release.
+          sleep 5
+          tmp="$(mktemp -d)"
+          HOME="$tmp" MVAVE_INSTALL_DIR="$tmp/bin" \
+            bash install.sh --version "$GITHUB_REF_NAME"
+          "$tmp/bin/mvave-chocolate-tui" --version

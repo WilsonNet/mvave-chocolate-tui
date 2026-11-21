@@ -14,13 +14,33 @@ No more Windows VM or Wine just to change footswitch assignments. Edit CC number
 - **Non-blocking I/O** — writes use `amidi` subprocess; reads run in background goroutine
 - **Connection recovery** — clean open/close, handles unplug/replug
 
+## Install
+
+One command — downloads the latest release, installs it to `~/.local/bin`, and
+opens the TUI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WilsonNet/mvave-chocolate-tui/main/install.sh | bash -s -- --run
+```
+
+Drop `--run` to only install it. Add `--write` after `--` to allow writes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WilsonNet/mvave-chocolate-tui/main/install.sh | bash -s -- --run -- --write
+```
+
+The script checks the release checksum, supports `--dir DIR` and
+`--version vX.Y.Z`, and refuses to run anywhere but Linux. Prebuilt tarballs for
+`amd64` and `arm64` are on the [Releases](https://github.com/WilsonNet/mvave-chocolate-tui/releases)
+page if you would rather install by hand.
+
 ## Requirements
 
-- **Go** 1.26+ (managed via [asdf](https://asdf-vm.com/))
-- **alsa-utils** (`amidi` command)
+- **Go** 1.26+ only to build from source (managed via [asdf](https://asdf-vm.com/))
+- **alsa-utils** (`amidi` command) for sending configuration
 - M-Vave Chocolate in **U (USB)** mode (not HOST)
 
-## Quick start
+## Quick start from source
 
 ```bash
 go run .

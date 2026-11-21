@@ -838,14 +838,34 @@ func (m *Model) renderEdit() string {
 	return strings.Join(lines, "\n")
 }
 
+// version is stamped by the release workflow:
+// go build -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
+const usage = `mvave-chocolate-tui — configure an M-Vave Chocolate over USB
+
+Usage:
+  mvave-chocolate-tui [--write] [--version] [device]
+
+  --write    allow SysEx writes; without it the TUI only reads the pedal
+  --version  print the version and exit
+  device     ALSA raw MIDI path (default: auto-detect)`
+
 func main() {
 	midiPath := defaultMidiDevice
 	allowWrite := false
 	var args []string
 	for _, a := range os.Args[1:] {
-		if a == "--write" {
+		switch a {
+		case "--write":
 			allowWrite = true
-		} else {
+		case "--version", "-v":
+			fmt.Printf("mvave-chocolate-tui %s\n", version)
+			return
+		case "--help", "-h":
+			fmt.Println(usage)
+			return
+		default:
 			args = append(args, a)
 		}
 	}
