@@ -1,0 +1,158 @@
+@import '@fontsource-variable/archivo/wght.css';
+@import '@fontsource-variable/spline-sans-mono/wght.css';
+
+/* Silkscreen bench-card theme: cool paper, ink, one signal orange. */
+:root {
+  --sl-font: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: 'Spline Sans Mono Variable', ui-monospace, monospace;
+
+  --sl-color-accent-low: #f6d2c8;
+  --sl-color-accent: #c93a22;
+  --sl-color-accent-high: #701c0b;
+  --sl-color-white: #15171b;
+  --sl-color-gray-1: #24272d;
+  --sl-color-gray-2: #363a41;
+  --sl-color-gray-3: #5d626b;
+  --sl-color-gray-4: #8a8f97;
+  --sl-color-gray-5: #c3c6cb;
+  --sl-color-gray-6: #e2e3e5;
+  --sl-color-gray-7: #f2f2f0;
+  --sl-color-black: #fbfbf9;
+
+  --sl-color-bg: #fbfbf9;
+  --sl-color-bg-nav: #ececea;
+  --sl-color-bg-sidebar: #ececea;
+  --sl-color-hairline-light: #d3d5d8;
+  --sl-color-hairline: #c3c6cb;
+  --sl-color-hairline-shade: #b2b5ba;
+  --sl-color-text-accent: #b1331d;
+  --sl-color-text-invert: #fbfbf9;
+
+  --sl-content-width: 46rem;
+  --sl-sidebar-width: 17rem;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #3a1710;
+  --sl-color-accent: #ff7357;
+  --sl-color-accent-high: #ffb7a6;
+  --sl-color-white: #ecedee;
+  --sl-color-gray-1: #d9dade;
+  --sl-color-gray-2: #b7b9bf;
+  --sl-color-gray-3: #8d9098;
+  --sl-color-gray-4: #62666e;
+  --sl-color-gray-5: #3e424a;
+  --sl-color-gray-6: #24272d;
+  --sl-color-gray-7: #1a1c21;
+  --sl-color-black: #101216;
+
+  --sl-color-bg: #101216;
+  --sl-color-bg-nav: #0c0e12;
+  --sl-color-bg-sidebar: #0c0e12;
+  --sl-color-hairline-light: #2a2d34;
+  --sl-color-hairline: #33363d;
+  --sl-color-hairline-shade: #3e424a;
+  --sl-color-text-accent: #ff8a72;
+  --sl-color-text-invert: #101216;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sl-markdown-content {
+  font-size: 1.02rem;
+  line-height: 1.72;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.02em;
+}
+
+.sl-markdown-content h2 {
+  border-top: 1px solid var(--sl-color-hairline);
+  padding-top: 1.6rem;
+  margin-top: 2.6rem;
+}
+
+.sl-markdown-content code:not(:where(.not-content *)) {
+  font-size: 0.9em;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 2px;
+  padding: 0.08em 0.32em;
+}
+
+.sl-markdown-content pre:not(:where(.not-content *)) {
+  border-radius: 3px;
+  border: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content table {
+  font-variant-numeric: tabular-nums;
+}
+
+.sl-markdown-content blockquote {
+  border-inline-start: 1px solid var(--sl-color-accent);
+  background: color-mix(in srgb, var(--sl-color-accent) 5%, transparent);
+}
+
+/* Terminal captures get the same plate treatment as the landing. */
+.sl-markdown-content img.shot {
+  display: block;
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--sl-color-hairline);
+  background: #0c0e12;
+}
+
+figcaption {
+  font-family: var(--sl-font-mono);
+  font-size: 0.78rem;
+  color: var(--sl-color-gray-3);
+  margin-top: 0.6rem;
+}
+
+/* Focus rings belong to the palette. */
+:where(a, button, summary):focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--sl-color-accent) 28%, transparent);
+}
+
+/* Brand and navigation: the palette's ink, not a link color. */
+.site-title {
+  color: var(--sl-color-white);
+  letter-spacing: -0.02em;
+}
+.sidebar-content a[aria-current='page'] {
+  background: color-mix(in srgb, var(--sl-color-accent) 9%, transparent);
+  color: var(--sl-color-white);
+  box-shadow: inset 2px 0 0 var(--sl-color-accent);
+}
+
+/* Asides use the same two inks as the rest of the site. */
+.starlight-aside--note,
+.starlight-aside--tip {
+  --sl-color-asides-border: var(--sl-color-accent);
+  --sl-color-asides-text-accent: var(--sl-color-accent-high);
+  background-color: color-mix(in srgb, var(--sl-color-accent) 7%, var(--sl-color-bg));
+}
+.starlight-aside--caution {
+  --sl-color-asides-border: #c98a2a;
+  --sl-color-asides-text-accent: #8a5a12;
+  background-color: #f4eddc;
+}
+:root[data-theme='dark'] .starlight-aside--caution {
+  --sl-color-asides-text-accent: #e2b04a;
+  background-color: #221c10;
+}
+
+@media (max-width: 560px) {
+  .site-title { font-size: 1rem; }
+}

@@ -11,3 +11,11 @@ mvave-tui
 # IDE
 .idea/
 .vscode/
+
+# Site build output and local previews
+site/node_modules/
+site/dist/
+site/.astro/
+
+# Playwright MCP captures
+.playwright-mcp/

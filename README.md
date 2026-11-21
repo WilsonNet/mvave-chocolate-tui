@@ -1,18 +1,27 @@
 # M-Vave Chocolate TUI
 
-A terminal UI for configuring the M-Vave Chocolate Bluetooth MIDI footswitch controller on Linux.
+A terminal UI for configuring the M-Vave Chocolate and Chocolate Plus MIDI
+footswitches on Linux.
 
-No more Windows VM or Wine just to change footswitch assignments. Edit CC numbers, switch modes, and send SysEx config directly from your terminal.
+No more Windows VM or Wine just to change footswitch assignments. Read the
+pedal, edit what the switches send, change modes, back up the configuration and
+write it back — directly from your terminal.
+
+**Documentation:** <https://wilsonnet.github.io/mvave-chocolate-tui/>
+
+Connecting only **reads**. Writes need `--write`, are shown byte by byte,
+must be acknowledged, and are read back.
 
 ## Features
 
-- **Auto-detection** — finds your Chocolate (SINCO/FootCtrl) via `/proc/asound/cards`, no hardcoded paths
-- **16-switch grid** — 4 banks × 4 switches, all visible and editable
-- **Real-time MIDI monitor** — see footswitch presses as they happen
-- **SysEx configuration** — sends proper Jieli-manufacturer SysEx to reprogram the device
-- **Mode switching** — toggle between Custom CC, Program Change, Keyboard, and more
-- **Non-blocking I/O** — writes use `amidi` subprocess; reads run in background goroutine
-- **Connection recovery** — clean open/close, handles unplug/replug
+- **Read-only by default** — connecting sends a read request, never a write
+- **Auto-detection** — finds your pedal (SINCO/FootCtrl) via `/proc/asound/cards`
+- **Switch table** — 4 banks × 4 switches, editable with live press states
+- **Pedal screen** — the four switches drawn as on the pedal, with banks, groups and message lists (Chocolate Plus; original Advanced Custom is built from the same decoder but untested on hardware)
+- **Mode switching** — confirm, write, acknowledge and read back
+- **Backup, restore and compare** — export every readable byte and diff two reads
+- **Non-blocking I/O** — writes use an `amidi` subprocess; reads run in the raw MIDI fd
+- **Honest failure** — a partial SysEx reply is reassembled; an unrecognised pedal stays on the safe table screen
 
 ## Install
 
@@ -20,13 +29,13 @@ One command — downloads the latest release, installs it to `~/.local/bin`, and
 opens the TUI:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WilsonNet/mvave-chocolate-tui/main/install.sh | bash -s -- --run
+curl -fsSL https://github.com/WilsonNet/mvave-chocolate-tui/releases/latest/download/install.sh | bash -s -- --run
 ```
 
 Drop `--run` to only install it. Add `--write` after `--` to allow writes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WilsonNet/mvave-chocolate-tui/main/install.sh | bash -s -- --run -- --write
+curl -fsSL https://github.com/WilsonNet/mvave-chocolate-tui/releases/latest/download/install.sh | bash -s -- --run -- --write
 ```
 
 The script checks the release checksum, supports `--dir DIR` and
@@ -115,23 +124,27 @@ The M-Vave Chocolate is a Jieli-based USB MIDI device (vendor `00 32`). It accep
 
 - **Reads**: raw ALSA MIDI device (`/dev/snd/midiC*`) opened O_RDONLY in a goroutine
 - **Writes**: `amidi -p hw:X,0,0 -S <hex>` subprocess — uses ALSA library, never blocks the UI
-- **Checksum**: `0x28A - sum(all bytes) - subcommand - value` (verified against 18 known-good examples from the cbix repo)
+- **Checksum**: the device checksums the decoded message (28-bit words, 8-bit bytes, doubled, `660 - 2×sum`); the old `0x28A - sum - sub - value` form is equivalent only while the address's second byte is even
+- **Reading**: the official app's 24 read requests cover 23,646 bytes; replies arrive over many reads and are reassembled before decoding
 
 ## Testing
 
 ```bash
-# All tests (unit + E2E with real device)
-go test -v ./...
+# Unit tests; device tests skip when no pedal is present
+go test -count=1 ./...
 
-# Unit tests only (no device needed)
-go test -v -run "TestKnown|TestBuild|TestChecksum|TestCC" ./...
+# With a pedal attached, serialise packages: one reader owns the port
+go test -p 1 -count=1 ./...
 
-# Headless E2E (requires Chocolate in U mode)
-go test -v -run TestHeadless ./...
+# Headless device E2E (pedal in U mode)
+go test -p 1 -v -timeout 120s -run TestHeadless ./internal/midi/
 
 # Lint
 golangci-lint run ./...
 ```
+
+See [docs/development.md](docs/development.md) for the protocol orientation,
+hardware test checklist and sources.
 
 ## Troubleshooting
 

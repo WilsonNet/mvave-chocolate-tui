@@ -1,0 +1,392 @@
+---
+import '../styles/landing.css';
+
+const base = import.meta.env.BASE_URL;
+const u = (p: string) => `${base.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
+const site = 'https://wilsonnet.github.io';
+const canonical = `${site}${base.replace(/\/$/, '')}/`;
+const repo = 'https://github.com/WilsonNet/mvave-chocolate-tui';
+const installCmd =
+  'curl -fsSL https://github.com/WilsonNet/mvave-chocolate-tui/releases/latest/download/install.sh | bash -s -- --run';
+
+const cells = [
+  { id: '1A', t: 'Install', d: 'One command downloads the latest release, verifies its checksum, installs it to ~/.local/bin and opens it.', h: u('install/') },
+  { id: '1B', t: 'First run', d: 'Plug the pedal in with the switch on U, see what the TUI reads, and decide when to allow writes.', h: u('first-run/') },
+  { id: '1C', t: 'The switch table', d: 'Sixteen switch positions, one CC and latch flag each. Edit, send, read back.', h: u('using/table/') },
+  { id: '1D', t: 'Pedal screen', d: 'The four switches drawn as they sit on the pedal, with banks, groups, backup and compare.', h: u('using/pedal-screen/') },
+  { id: '2A', t: 'Operating modes', d: 'What each mode sends: Program Change, Custom CC, Advanced Custom, keyboard and media modes.', h: u('using/modes/') },
+  { id: '2B', t: 'Backup & restore', d: 'Export every byte read, restore it as edits, and list exactly what changed since a mark.', h: u('using/backup/') },
+  { id: '2C', t: 'CLI & flags', d: '--write, --version, a fixed device path, and what each one changes.', h: u('reference/cli/') },
+  { id: '2D', t: 'SysEx protocol', d: 'Jieli vendor messages, reads, writes, checksums and the 23,646-byte configuration region.', h: u('reference/protocol/') },
+  { id: '3A', t: 'Linux & testing', d: 'ALSA raw MIDI, amidi, busy ports, virtual ports and how to test without a pedal.', h: u('reference/linux/') },
+  { id: '3B', t: 'Troubleshooting', d: 'Device busy, mode not read, unrecognised pedal, writes that do not persist.', h: u('reference/troubleshooting/') },
+  { id: '3C', t: 'Guitar & modelers', d: 'Program Change presets and CC block toggles for Ampero, Valeton, HX Stomp, Kemper and plugins.', h: u('use-cases/modelers/') },
+  { id: '3D', t: 'DAWs', d: 'Transport, record, undo and loop control in Ableton, REAPER and Ardour.', h: u('use-cases/daws/') },
+  { id: '4A', t: 'Loopers', d: 'Record, overdub, stop and clear on HX Stomp, RC-5, Ampero and Ableton.', h: u('use-cases/loopers/') },
+  { id: '4B', t: 'Page turning', d: 'Turn pages in forScore and OnSong, or drive a teleprompter, with zero MIDI mapping.', h: u('use-cases/page-turning/') },
+  { id: '4C', t: 'Expression pedal', d: 'Map the TRS jack to volume, wah or any CC, including the reversed-range gotcha.', h: u('use-cases/expression/') },
+  { id: '4D', t: 'FAQ', d: 'Does it work in Program Change mode? Is the original supported? What gets written?', h: u('reference/faq/') },
+];
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebSite',
+      name: 'M-VAVE Chocolate TUI',
+      url: canonical,
+      inLanguage: 'en',
+    },
+    {
+      '@type': 'SoftwareApplication',
+      name: 'M-VAVE Chocolate TUI',
+      applicationCategory: 'UtilitiesApplication',
+      applicationSubCategory: 'MIDI configuration',
+      operatingSystem: 'Linux',
+      description:
+        'Terminal UI to read and write M-VAVE Chocolate and Chocolate Plus footswitch settings over USB MIDI. Read-only by default, with acknowledged, byte-level writes.',
+      url: canonical,
+      downloadUrl: `${repo}/releases/latest`,
+      codeRepository: repo,
+      license: 'https://www.gnu.org/licenses/gpl-3.0.html',
+      softwareVersion: '0.1.1',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      author: { '@type': 'Organization', name: 'WilsonNet', url: 'https://github.com/WilsonNet' },
+    },
+    {
+      '@type': 'SoftwareSourceCode',
+      name: 'mvave-chocolate-tui',
+      codeRepository: repo,
+      programmingLanguage: 'Go',
+      runtimePlatform: 'Linux',
+      license: 'https://www.gnu.org/licenses/gpl-3.0.html',
+    },
+  ],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>M-VAVE Chocolate TUI — configure your pedal from the terminal</title>
+    <meta
+      name="description"
+      content="Linux terminal UI for the M-VAVE Chocolate and Chocolate Plus: read the pedal, edit switches and modes, write over USB with acknowledged, byte-level changes. Read-only until --write."
+    />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={u('favicon.svg')} type="image/svg+xml" />
+    <meta name="theme-color" content="#e6e7e9" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="M-VAVE Chocolate TUI" />
+    <meta
+      property="og:description"
+      content="Configure M-VAVE Chocolate and Chocolate Plus footswitches over USB from a Linux terminal. Read first, write on purpose, verify every byte."
+    />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={`${site}${base}/og.png`} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={`${site}${base}/og.png`} />
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <a class="brand" href={u('')}>
+          <img src={u('favicon.svg')} alt="" width="26" height="26" />
+          M-VAVE Chocolate TUI <span>for Linux</span>
+        </a>
+        <nav aria-label="Main">
+          <a href={u('install/')}>Docs</a>
+          <a href={`${repo}/releases`}>Releases</a>
+          <a class="gh" href={repo}>
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+            </svg>
+            GitHub
+          </a>
+          <span class="pill">v0.1.1</span>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <div>
+            <h1>Configure the pedal from your <em>terminal.</em></h1>
+            <p class="lede">
+              M-VAVE Chocolate and Chocolate Plus, over USB. The TUI reads your
+              setup first, shows every switch, and <strong>writes only when you
+              pass <code>--write</code></strong> — one acknowledged byte at a
+              time, then read back.
+            </p>
+
+            <div class="install">
+              <div class="install-head">
+                <span>Install · Linux x86_64 / arm64</span>
+                <button class="copy" id="copy" type="button">Copy</button>
+              </div>
+              <pre id="cmd"><span class="p">$</span> curl -fsSL https://github.com/<wbr />WilsonNet/mvave-chocolate-tui/<wbr />releases/latest/download/install.sh | bash -s -- --run</pre>
+            </div>
+            <p class="hero-note">
+              Downloads the latest release, checks its SHA-256, installs to
+              <code>~/.local/bin</code> and opens it. Add
+              <code>--&nbsp;--write</code> to allow writes.
+            </p>
+
+            <div class="actions">
+              <a href={u('install/')}>Read the docs →</a>
+              <a class="plain" href={repo}>Source on GitHub ↗</a>
+            </div>
+          </div>
+
+          <figure style="margin:0">
+            <div class="plate">
+              <div class="plate-bar">
+                <span><span class="dot"></span>mvave-chocolate-tui</span>
+                <span>SINCO MIDI 1 · read-only</span>
+              </div>
+              <img
+                src={u('shots/hero.png')}
+                width="999"
+                height="830"
+                alt="The TUI's switch table: 16 positions from 1A to 4D, each with a CC number, latch flag and press state."
+              />
+            </div>
+            <figcaption class="caption">
+              <span>Real capture · 16 switch positions</span>
+              <span>1A selected</span>
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <div class="facts">
+        <div class="wrap">
+          <span><b>Read-only</b> by default</span>
+          <span><b>Acknowledged</b> byte writes</span>
+          <span><b>Checked</b> on real pedals</span>
+          <span><b>GPL-3.0</b> · Go 1.26+</span>
+          <span><b>98</b> test functions</span>
+        </div>
+      </div>
+
+      <section>
+        <div class="wrap two">
+          <div class="prose">
+            <h2>It reads before it writes.</h2>
+            <p>
+              Opening the TUI used to overwrite all sixteen switches before a
+              key was pressed. It doesn't anymore. Connecting only asks the
+              pedal for its settings; the write path is a separate, explicit
+              act.
+            </p>
+            <ul>
+              <li><b>Read-only until <code>--write</code>.</b> Pressing send without it explains why nothing was sent.</li>
+              <li><b>Every write is planned first.</b> The screen lists each address and its old → new value before anything leaves the terminal.</li>
+              <li><b>No silent success.</b> Each message must be acknowledged, and the configuration is read back before the change counts.</li>
+              <li><b>Unknown is not overwritten.</b> When the pedal is not recognised, the TUI stays on the table screen instead of guessing a layout.</li>
+            </ul>
+          </div>
+          <div class="transcript" role="img" aria-label="Write confirmation shown by the TUI">
+<pre>Write 2 byte(s) to the pedal?
+  address   48    48 → 49
+  address 1840    48 → 49
+Each is sent on its own and must be
+acknowledged; the pedal is read back after.
+────────────────────────────────────────
+● unwritten edits   Read from pedal
+y write · n cancel</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="docs">
+        <div class="wrap">
+          <h2>Sixteen switches. Sixteen answers.</h2>
+          <p class="sub">
+            The pedal's own grid is the index. Hover or tab through it to see
+            what each page covers, then open it.
+          </p>
+          <div class="matrix-layout">
+            <div class="matrix" role="list">
+              {cells.map((c, i) => (
+                <a
+                  class="cell"
+                  role="listitem"
+                  href={c.h}
+                  data-id={c.id}
+                  data-title={c.t}
+                  data-desc={c.d}
+                  data-href={c.h}
+                  style={`--i:${i}`}
+                >
+                  <span class="id">{c.id}</span>
+                  <span class="t">{c.t}</span>
+                  <span class="go" aria-hidden="true">→</span>
+                </a>
+              ))}
+            </div>
+            <aside class="preview" aria-live="polite">
+              <div>
+                <div class="id" id="pv-id">1A · INSTALL</div>
+                <h3 id="pv-title">Install</h3>
+                <p id="pv-desc">
+                  One command downloads the latest release, verifies its
+                  checksum, installs it to ~/.local/bin and opens it.
+                </p>
+              </div>
+              <div class="open" id="pv-open">Open the page →</div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>What people actually play.</h2>
+          <p class="sub">
+            The pedal sends MIDI; the receiving device decides what the numbers
+            mean. These are the maps people use most, with sources.
+          </p>
+          <table class="ledger">
+            <thead>
+              <tr><th>Job</th><th>What the pedal sends</th><th>Typical gear</th><th>Guide</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="name">Preset up / down</td>
+                <td class="mono">Program Change</td>
+                <td>Valeton GP-100, Hotone Ampero, HX Stomp, Kemper</td>
+                <td><a href={u('use-cases/modelers/')}>Modelers</a></td>
+              </tr>
+              <tr>
+                <td class="name">Block on / off</td>
+                <td class="mono">CC value 127 / 0</td>
+                <td>Drive, delay, reverb, tuner</td>
+                <td><a href={u('use-cases/modelers/')}>Modelers</a></td>
+              </tr>
+              <tr>
+                <td class="name">Transport</td>
+                <td class="mono">CC or Note On</td>
+                <td>Ableton, REAPER, Ardour</td>
+                <td><a href={u('use-cases/daws/')}>DAWs</a></td>
+              </tr>
+              <tr>
+                <td class="name">Looper</td>
+                <td class="mono">CC 60–66, 80–87</td>
+                <td>HX Stomp, RC-5, Ampero</td>
+                <td><a href={u('use-cases/loopers/')}>Loopers</a></td>
+              </tr>
+              <tr>
+                <td class="name">Page turning</td>
+                <td class="mono">HID Page Up / Down</td>
+                <td>forScore, OnSong, teleprompters</td>
+                <td><a href={u('use-cases/page-turning/')}>Page turning</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="install">
+        <div class="wrap">
+          <h2>One line, then it opens.</h2>
+          <p class="sub">
+            The installer refuses non-Linux systems, verifies the release
+            checksum and installs to <code>~/.local/bin</code>. Downloads are
+            also on the releases page.
+          </p>
+          <div class="install-grid">
+            <div>
+              <ol class="steps">
+                <li>
+                  <b>Install and open</b>
+                  <span>Run the command above. Pin a version with <code>--version v0.1.1</code> or change the directory with <code>--dir</code>.</span>
+                </li>
+                <li>
+                  <b>Plug the pedal in</b>
+                  <span>Side switch on <code>U</code>, not HOST. It appears as <code>SINCO MIDI 1</code>.</span>
+                </li>
+                <li>
+                  <b>Read first</b>
+                  <span>Press <code>r</code> to read, <code>m</code> to change a mode, or edit a switch and press <code>s</code>. Writes need <code>--write</code>.</span>
+                </li>
+                <li>
+                  <b>Build from source instead</b>
+                  <span><code>git clone</code>, then <code>go build -o mvave-chocolate-tui .</code> with Go 1.26+.</span>
+                </li>
+              </ol>
+            </div>
+            <div>
+              <ul class="req">
+                <li><b>OS</b> · Linux with ALSA (amd64 or arm64)</li>
+                <li><b>Tools</b> · <code>amidi</code> from alsa-utils for writes</li>
+                <li><b>Pedal</b> · Chocolate or Chocolate Plus, USB-C data cable</li>
+                <li><b>License</b> · GPL-3.0-or-later</li>
+                <li><b>Source</b> · <a href={repo}>github.com/WilsonNet/mvave-chocolate-tui</a></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div>
+          <div class="brandline">M-VAVE Chocolate TUI</div>
+          <div class="small">Not affiliated with M-VAVE. GPL-3.0-or-later.</div>
+        </div>
+        <nav aria-label="Footer">
+          <a href={u('install/')}>Docs</a>
+          <a href={`${repo}/releases`}>Releases</a>
+          <a href={repo}>GitHub</a>
+          <a href={u('reference/protocol/')}>Protocol</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      const copy = document.getElementById('copy');
+      const cmd = document.getElementById('cmd');
+      copy?.addEventListener('click', async () => {
+        const text = (cmd?.textContent || '').replace(/^\s*\$\s*/, '').trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          copy.textContent = 'Copied';
+          setTimeout(() => (copy.textContent = 'Copy'), 1600);
+        } catch {
+          copy.textContent = 'Select and copy';
+        }
+      });
+
+      const preview = document.getElementById('pv-id');
+      const title = document.getElementById('pv-title');
+      const desc = document.getElementById('pv-desc');
+      const open = document.getElementById('pv-open');
+      const cells = document.querySelectorAll('.cell');
+
+      function show(cell) {
+        cells.forEach((c) => c.classList.toggle('active', c === cell));
+        const id = cell.getAttribute('data-id') || '';
+        const t = cell.getAttribute('data-title') || '';
+        const d = cell.getAttribute('data-desc') || '';
+        const h = cell.getAttribute('data-href') || '#';
+        if (preview) preview.textContent = `${id} · ${t}`.toUpperCase();
+        if (title) title.textContent = t;
+        if (desc) desc.textContent = d;
+        if (open) open.innerHTML = `<a href="${h}">Open the page →</a>`;
+      }
+
+      cells.forEach((cell) => {
+        cell.addEventListener('mouseenter', () => show(cell as HTMLElement));
+        cell.addEventListener('focus', () => show(cell as HTMLElement));
+      });
+    </script>
+  </body>
+</html>

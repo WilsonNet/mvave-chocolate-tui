@@ -751,3 +751,18 @@ func TestASplitReplyIsReassembled(t *testing.T) {
 		t.Errorf("modeKnown=%v deviceMode=%d, want Program Change B", m.modeKnown, m.deviceMode)
 	}
 }
+
+// A terminal that reports zero size (startup, a hidden tmux pane) used to
+// panic: viewport.GotoBottom slices with negative dimensions.
+func TestZeroWindowSizeDoesNotPanic(t *testing.T) {
+	m := NewModel("/dev/null")
+	m.log = append(m.log, MidiMsg{Hex: "B0 07 7F"})
+
+	for _, size := range []struct{ w, h int }{{0, 0}, {10, 5}, {3, 21}, {80, 24}} {
+		m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		m.logView = true
+		_ = m.View()
+		m.logView = false
+		_ = m.View()
+	}
+}

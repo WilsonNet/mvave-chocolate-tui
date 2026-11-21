@@ -1,5 +1,11 @@
 # SysEx Protocol Reference
 
+**Current documentation lives on the website:** <https://wilsonnet.github.io/mvave-chocolate-tui/reference/protocol/>.
+It is the maintained summary, including the corrected checksum, both models'
+layouts and the open questions. `docs/development.md` is the engineering
+checklist. The notes below are the original cbix-derived reference, kept for
+provenance.
+
 The M-Vave Chocolate uses Jieli manufacturer SysEx (vendor `00 32`). This document summarizes the known protocol from [cbix/mvave-chocolate-sysex](https://github.com/cbix/mvave-chocolate-sysex).
 
 ## Message structure
@@ -10,6 +16,11 @@ F0 00 32 <cmd> <sub> ... <data> ... <checksum_2bytes> F7
 ```
 
 The checksum is a 14-bit value packed into two 7-bit MIDI bytes (little-endian).
+
+> **Correction (2026):** the device checksums the *decoded* message, not the
+> raw byte sum. The `0x28A - sum - subcommand - value` formula below is
+> equivalent only while the address's second byte is even; address 178 is the
+> counter-example. See the website reference and `internal/sysex/protocol.go`.
 
 ## Operating modes
 

@@ -5,127 +5,115 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-go build -o mvave-chocolate-tui .       # build binary
-go run .                                 # run (auto-detects device)
-go run . /dev/snd/midiC5D0             # run with explicit device path
+go build -o mvave-chocolate-tui .        # build binary
+go run .                                  # run (auto-detects device)
+go run . --write                          # allow SysEx writes
+go run . /dev/snd/midiC5D0                # explicit ALSA path
+./mvave-chocolate-tui --version           # stamped by the release workflow
 
-# Unit tests (no device required)
-go test -v -run "TestKnown|TestBuild|TestChecksum|TestCC|TestModel|TestSend|TestFind|TestTUIMode|TestTUILog" ./...
-
-# Device E2E tests (requires Chocolate in U mode)
-go test -v -timeout 90s -run TestHeadless ./internal/midi/
-go test -v -timeout 60s -run "TestTUIAdvancedCustomSendAllConfig|TestTUIAdvancedCustomFullJourney" .
-
-# Full test suite (skips device tests when no device present)
+# Unit tests (device tests skip when no pedal is present)
 go test -count=1 -timeout 120s ./...
+go test -p 1 -count=1 ./...               # serialise packages when a pedal is attached
 
-golangci-lint run ./...                  # lint
+# Device E2E tests (pedal in U mode; one process owns the port)
+go test -p 1 -v -timeout 120s -run TestHeadless ./internal/midi/
+go test -p 1 -v -timeout 60s -run "TestTUI" .
 
-# Clear orphaned amidi processes (if "device busy" errors occur)
-fuser -k /dev/snd/midiC* 2>/dev/null || kill -9 $(pgrep -f "amidi.*hw:5") 2>/dev/null
+golangci-lint run ./...                   # lint
+
+# Clear a stale MIDI fd / amidi process
+fuser -k /dev/snd/midiC* 2>/dev/null
+
+# Website
+cd site && npm run dev                    # local docs site
+cd site && npm run build                  # static build in site/dist
 ```
 
 ## Architecture
 
-Single-package TUI (`tui.go` + `main`) backed by three internal packages:
+A Bubble Tea TUI in package `main`, backed by three internal packages:
 
 ```
-tui.go                      — Bubbletea model/update/view + main()
-tui_test.go                 — Unit + E2E tests (package main; uses teatest)
-internal/midi/device.go     — ALSA MIDI I/O; reads via O_RDONLY fd, writes via amidi subprocess
-internal/midi/readback_test.go — Headless device E2E tests (require physical device)
-internal/sysex/protocol.go  — SysEx builders + checksum + all protocol constants
-internal/detect/detect.go   — Scans /proc/asound/cards for SINCO/FootCtrl/USB-Midi
+tui.go                      — model/update/view, table screen, connect + read loop
+mode_ui.go                  — operating-mode picker, write + verify
+pedal.go                    — model-neutral Config/Device, Plus and original decoders
+pedal_ui.go                 — the pedal screen (switches, banks, groups, edits)
+pedal_backup.go             — export/import/compare backups
+internal/sysex/protocol.go  — legacy builders, modes, checksums, known vectors
+internal/sysex/image.go     — read requests, reply decoding, BuildWrite, Image
+internal/sysex/plus.go      — Chocolate Plus layout and write planning
+internal/midi/device.go     — ALSA I/O: raw fd reads, amidi subprocess writes
+internal/detect/detect.go   — scans /proc/asound/cards for SINCO/FootCtrl/USB-Midi
+site/                       — Astro Starlight documentation site (GitHub Pages)
 ```
 
-The `Model` struct holds 16 `SwitchConfig{CC int; Latching bool}` entries plus a buffered `midiMsgs chan MidiMsg` (cap 256) for goroutine→UI communication. Config persists to `~/.config/mvave-chocolate-tui/config.json` (loaded on startup, saved after send).
+The `Model` holds the table's 16 `SwitchConfig{CC int; Latching bool}` entries,
+a buffered `midiMsgs chan MidiMsg` (cap 256), the partial SysEx frame
+(`rxPending`), and the decoded `pedalImage`/`device`/`cfg` used by the pedal
+screen. The table persists to `~/.config/mvave-chocolate-tui/config.json`;
+backups go to `~/.config/mvave-chocolate-tui/backups/`.
 
 ## Critical patterns
 
-**TUI is Advanced Custom only**: All mode selection UI is removed. On connect, `autoConfigureCmd` (a `tea.Cmd`) immediately sends `BuildModeChange(ModeAdvancedCustom)` + all 16 `BuildAdvCustomCC` writes and then reads back the mode. No init sequence, no flash writes.
+**Read-only by default.** On connect the TUI only sends the settings read
+requests. Every write path (`s`, `w`, `m`, mode change) is gated on
+`m.allowWrite`, which is only true with `--write`. Connecting must never change
+the pedal.
 
-**Async MIDI ops**: `sendAllConfig` and `requestConfig` snapshot the `*midi.Device` pointer and spawn a goroutine. Results return via `m.midiMsgs`. Never mutate `m` from inside those goroutines.
+**Plan, acknowledge, read back.** Writes show the addresses and old → new
+values first; each message waits for the `00 32 01 08` ACK; the configuration
+is then read again and must match. Do not report success from an ACK alone.
 
-**Channel drain**: Every `Update()` call drains `m.midiMsgs` completely before processing the incoming message. This prevents goroutine deadlocks when the channel fills.
+**Async MIDI ops.** `sendAllConfig`, `requestConfig`, mode writes and pedal
+writes snapshot the `*midi.Device` and run in a goroutine, reporting through
+`m.midiMsgs` (or the `pedalAck` channel for writes). Never mutate `m` from a
+goroutine.
 
-**amidi for writes**: `midi.Device.SendSysex` shells out to `amidi -p hw:X,Y,0 -S <hex>` for writes. Raw ALSA writes block the UI; amidi doesn't. Reads use the raw fd (O_RDONLY). amidi `--timeout` is in **seconds** (inactivity), not milliseconds.
+**Channel drain.** Each `Update()` drains `m.midiMsgs` before handling the
+message, so a full channel cannot deadlock a sender.
 
-**Checksum formula** (config messages, header `00 32 09 49`):
-```
-checksum = 0x28A - sum(all_bytes) - subcommand - value
-```
-Split into two 7-bit bytes: `low = v & 0x7F`, `high = (v >> 7) & 0x7F`. See `KnownExamples` in `protocol.go` for 18 verified test vectors.
+**amidi for writes.** `midi.Device.SendSysex` shells out to
+`amidi -p hw:X,Y,0 -S <hex>`; raw ALSA writes block the UI. Reads use the raw
+fd (O_RDONLY). `amidi --timeout` is in seconds (inactivity), and send + receive
+must be a single invocation.
 
-**Switch indexing**: Switches are `[0..15]`. Bank = `idx/4`, switch-in-bank = `idx%4`. Label format: `{bank+1}{A..D}` (e.g., index 5 → `2B`).
+**SysEx reassembly.** A settings reply is 1,173 bytes over many reads.
+`parseMidiBytes` keeps an incomplete frame in `m.rxPending` and rejoins it;
+never drop a partial `F0 …` frame.
 
-**sendAllConfig sequence** (RAM-only, no init, no flash):
-1. `BuildModeChange(ModeAdvancedCustom)` — 1 msg
-2. For each of 16 switches: `BuildAdvCustomCC` → 3 msgs each (CC#, latch, type) — 48 msgs total
-3. `saveConfig(config)` — writes JSON to disk
-4. Sends `DONE: all config sent and saved` to `midiMsgs`
+**Checksum.** For `00 32 09 49` messages the device checksums the *decoded*
+message: each 4-byte group of 7-bit bytes is a 28-bit little-endian number;
+sum those numbers' 8-bit bytes plus the value byte, double it, and subtract
+from 660. Split the result into two 7-bit bytes. The old
+`0x28A - sum - sub - value` agrees only while the address's second byte is
+even. See `Checksum` and `KnownExamples`.
 
-**No flash writes**: Flash write (byte[10]=0x00) encoding is non-linear — CC=99 stores as bytes `(0x40, 0x31)` in the 0D41 dump, NOT as 99. Flash writes caused wrong CC values to restore. Use RAM writes only.
+**Model recognition is shape-based.** `devices` tries the Plus first, then the
+original. If neither matches, stay on the table screen — never write one
+model's layout over another. The Plus stores message lists and groups; the
+table's `s` path writes the original's sixteen-position layout.
 
-## SysEx protocol reference
+**Switch indexing.** Positions are `[0..15]`, label `{bank+1}{A..D}`
+(index 5 → `2B`). On the pedal screen the four physical switches are A–D, and
+banks are per-switch.
 
-Vendor `00 32` (Jieli). Partial reverse-engineering at [cbix/mvave-chocolate-sysex](https://github.com/cbix/mvave-chocolate-sysex); additional protocol discovered via headless probing in this repo.
+**Mode IDs differ per model.** Do not port a mode byte between models blindly
+(Plus Advanced Custom is `0x03`; the original's is `0x08`/`0x09` depending on
+which source you believe — see `docs/development.md`).
 
-| Function | Purpose |
-|---|---|
-| `BuildInitSequence()` | 12-message handshake — NOT used by TUI (forces ModeCustom in msg 3; not needed for AdvCustom) |
-| `BuildModeChange(mode)` | Switch operating mode (value in `ModeCustom`, `ModeAdvancedCustom`, etc.) |
-| `BuildCCConfig(idx, cc, latch, chan)` | Custom CC mode: 2 msgs (CC + latch) for bank `idx/4`; use `SplitMessages` |
-| `BuildAdvCustomCC(idx, cc, latch, chan)` | Advanced Custom RAM write: 3 msgs, byte[10]=0x0E — immediate effect |
-| `BuildAdvCustomCCFlash(idx, cc, latch, chan)` | Advanced Custom flash write: 3 msgs, byte[10]=0x00 — probe/research only; encoding non-linear |
-| `BuildReadSettings()` | Request 0D 49 config dump — **mode byte live, CC values STATIC** |
-| `IsOKResponse(frame)` | Check for `00 32 01 08` ACK |
-| `ParseConfigResponse(frame)` | Decode 0D 49 frame — only `Mode` field is reliable |
+## Testing on hardware
 
-### Protocol constants (`internal/sysex`)
+- Pedal side switch on **U**; `amidi -l` must show `SINCO MIDI 1`.
+- One reader owns the raw port. Close DAWs, captures and other TUI instances.
+- `go test ./...` runs packages in parallel; with a pedal attached, use `-p 1`
+  or device tests can fight over the port.
+- `amidi -p hw:X,0,0 -S <hex> -d --timeout 3` is the ground truth for a single
+  message; send and receive in one invocation.
+- Back up (`x`) before experimenting, then confirm with the dump after.
 
-**Custom CC mode** (subcmds in `09 49` messages, byte[10]=`0x00`):
-```
-CustomCCSubcmdBase    = 0x02   // bank 0 CC; bank n = 0x02 + n*CustomBankStride
-CustomLatchSubcmdBase = 0x03   // bank 0 latch
-CustomBankStride      = 2
-```
+## Documentation
 
-**Advanced Custom mode** (subcmds in `09 49` messages):
-```
-AdvCustomSubcmdBase    = 0x30  // switch 0, attr 0
-AdvCustomSwitchStride  = 4     // 4 subcmds (attrs) per switch
-AdvCustomAttrCC        = 0     // CC# value
-AdvCustomAttrLatch     = 1     // latch mode (0=momentary, 1=latching)
-AdvCustomAttrType      = 2     // switch type
-AdvCustomLiveWrite     = 0x0E  // byte[10]: write reaches device RAM immediately
-AdvCustomSwitchTypeCC  = 0x07  // switch type: outputs CC message
-```
-
-Subcmd formula: `AdvCustomSubcmdBase + switchIndex*AdvCustomSwitchStride + attr`
-- Switch 0 CC: subcmd `0x30`, switch 3 CC: subcmd `0x3C`, switch 15 CC: subcmd `0x6C`
-
-**Two write paths for AdvCustom** (confirmed via `TestHeadlessAdvCustomFlashWriteProbe`):
-
-| byte[10] | Function | 0D41 dump | Survives reconnect |
-|---|---|---|---|
-| `0x0E` (AdvCustomLiveWrite) | RAM write — immediate effect | unchanged | no (RAM only) |
-| `0x00` | Flash write — persistent | 4 bytes change (including checksum) | yes |
-
-TUI uses RAM path only (`BuildAdvCustomCC`). Flash path (`BuildAdvCustomCCFlash`) is retained for research/testing only.
-
-### Readback caveat (reverse-engineered)
-
-The `0D 41` → `0D 49` response:
-- **Mode byte IS live** — updates immediately when `BuildModeChange` is sent.
-- **CC values are STATIC via `ParseConfigResponse`** — the 1173-byte config dump does NOT update when `09 49` CC writes are sent with byte[10]=0x0E (RAM path). `ParseConfigResponse.CC` returns stale structural bytes, not live CC assignments. Do not use to verify writes.
-- **Flash write (byte[10]=0x00) DOES update the dump** — confirmed: 4 bytes change (including checksum at bytes 1170–1171). The CC value encoding in the dump is not yet fully decoded; `ParseConfigResponse` does not extract it.
-- `BuildReadSettings()` is reliable only for reading current operating mode.
-- Two read variants: standard `10 7E` (1173 bytes) and `10 6A` (990 bytes, all zeros — no useful data).
-- **Raw fd vs ALSA sequencer**: `midiReadLoop` reads from `/dev/snd/midiCXDX` (raw fd). SysEx responses to `BuildReadSettings()` arrive on the ALSA sequencer port used by amidi — NOT on the raw fd. Use `amidi -S <hex> -d --timeout <secs>` (combined) to capture SysEx responses.
-
-## Device requirements
-
-- Chocolate side switch must be on **U** (USB), not HOST
-- Verify with `amidi -l` — should show `SINCO MIDI 1`
-- "device or resource busy": run `fuser -k /dev/snd/midiC*` to clear stale fd
-- Combined send+receive: use `amidi -p dev -S <hex> -d --timeout <secs>` (one invocation); separate send then receive loses the ACK because the port closes between calls
+- `docs/development.md` — protocol orientation, hardware checklist, sources.
+- `site/src/content/docs/` — the published guides (Astro Starlight).
+- `docs/sysex-protocol.md` — legacy protocol notes; `reference/protocol.md` on
+  the site is the current summary.

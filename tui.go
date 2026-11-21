@@ -377,10 +377,12 @@ drained:
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport.Width = msg.Width - 4
-		m.viewport.Height = msg.Height - 20
-		m.table.SetWidth(msg.Width - 4)
-		m.table.SetHeight(msg.Height - 20)
+		// A zero or tiny window (startup, a hidden pane) must not produce
+		// negative dimensions: viewport.GotoBottom panics on them.
+		m.viewport.Width = max(0, msg.Width-4)
+		m.viewport.Height = max(0, msg.Height-20)
+		m.table.SetWidth(max(0, msg.Width-4))
+		m.table.SetHeight(max(0, msg.Height-20))
 
 	case tea.KeyMsg:
 		if m.mp.open || m.mp.writing {
@@ -437,7 +439,9 @@ func (m *Model) updateViewport() {
 	}
 	if len(lines) > 0 {
 		m.viewport.SetContent(strings.Join(lines, "\n"))
-		m.viewport.GotoBottom()
+		if m.viewport.Width > 0 && m.viewport.Height > 0 {
+			m.viewport.GotoBottom()
+		}
 	}
 }
 

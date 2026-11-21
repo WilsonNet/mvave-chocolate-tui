@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://wilsonnet.github.io/mvave-chocolate-tui/sitemap-index.xml
